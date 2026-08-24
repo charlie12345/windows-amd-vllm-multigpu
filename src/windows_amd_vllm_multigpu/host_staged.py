@@ -127,6 +127,25 @@ class HostStagedGloo:
         output = self._gpu_from_host(host_output, tensor.device)
         return output.movedim(0, dim).contiguous()
 
+    def gather(
+        self, tensor: torch.Tensor, dst: int = 0, dim: int = -1
+    ) -> torch.Tensor | None:
+        """Gather equal GPU tensors to one group-local destination rank."""
+        if self.world_size == 1:
+            return tensor
+        stage = self._stage_for(tensor)
+        stage.copy_(tensor, non_blocking=False)
+        global_dst = dist.get_global_rank(self.group, dst) if self.group else dst
+        gathered = (
+            [torch.empty_like(stage) for _ in range(self.world_size)]
+            if self.rank == dst
+            else None
+        )
+        dist.gather(stage, gather_list=gathered, dst=global_dst, group=self.group)
+        if gathered is None:
+            return None
+        return self._gpu_from_host(torch.cat(gathered, dim=dim), tensor.device)
+
     def broadcast(self, tensor: torch.Tensor, src: int = 0) -> torch.Tensor:
         """Broadcast a GPU tensor from the group-local source rank."""
         if self.world_size == 1:

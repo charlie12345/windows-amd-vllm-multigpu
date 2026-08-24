@@ -1,0 +1,43 @@
+diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc_executor.py
+index 6aa0d94..37ac2f8 100644
+--- a/vllm/v1/executor/multiproc_executor.py
++++ b/vllm/v1/executor/multiproc_executor.py
+@@ -759,7 +759,6 @@ class WorkerProc:
+         while pipes:
+             ready = multiprocessing.connection.wait(pipes.keys())
+             for pipe in ready:
+-                assert isinstance(pipe, Connection)
+                 try:
+                     # Wait until the WorkerProc is ready.
+                     unready_proc_handle = pipes.pop(pipe)
+diff --git a/vllm/distributed/utils.py b/vllm/distributed/utils.py
+index 140aef4..b8e429e 100644
+--- a/vllm/distributed/utils.py
++++ b/vllm/distributed/utils.py
+@@ -39,9 +39,10 @@ logger = init_logger(__name__)
+ # We prefer to use os.sched_yield as it results in tighter polling loops,
+ # measured to be around 3e-7 seconds. However on earlier versions of Python
+ # os.sched_yield() does not release the GIL, so we fall back to time.sleep(0)
+-USE_SCHED_YIELD = (sys.version_info[:3] >= (3, 11, 1)) or (
+-    sys.version_info[:2] == (3, 10) and sys.version_info[2] >= 8
+-)
++USE_SCHED_YIELD = hasattr(os, "sched_yield") and (
++    (sys.version_info[:3] >= (3, 11, 1))
++    or (sys.version_info[:2] == (3, 10) and sys.version_info[2] >= 8)
++)
+ 
+ 
+ def sched_yield():
+diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
+index f7d6831..7963ac7 100644
+--- a/vllm/v1/worker/gpu_worker.py
++++ b/vllm/v1/worker/gpu_worker.py
+@@ -1334,7 +1334,7 @@ class Worker(GPUWorker):
+         # Release kept-alive cumem pools while the pluggable allocator wrappers
+         # and callbacks are still alive, so MemPool teardown is not deferred to
+         # interpreter finalization (pytorch/pytorch#145168).
+-        if current_platform.is_cuda_alike():
++        if current_platform.is_cuda_alike() and os.name != "nt":
+             from vllm.device_allocator.cumem import CuMemAllocator
+ 
+             if CuMemAllocator.instance is not None:

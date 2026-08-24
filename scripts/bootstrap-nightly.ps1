@@ -30,6 +30,14 @@ if (-not (Test-Path -LiteralPath $ProbePython)) {
     }
 }
 
+& $Uv pip install `
+    --python $ProbePython `
+    "cmake==$($Pins.cmake)" `
+    "ninja==$($Pins.ninja)"
+if ($LASTEXITCODE -ne 0) {
+    throw 'Installing the pinned native build tools failed.'
+}
+
 $Packages = @(
     "numpy==$($Pins.numpy)",
     "torch==$($Pins.torch)",

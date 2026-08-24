@@ -23,7 +23,7 @@ def _rank_main(rank: int, port: int, results: mp.Queue) -> None:
     import torch
     import torch.distributed as dist
 
-    from windows_amd_vllm_multigpu import HostStagedGloo
+    from windows_amd_vllm_multigpu import HostStagedGloo, SharedMemoryAllReduce
 
     record: dict[str, object] = {"rank": rank}
     try:
@@ -46,12 +46,27 @@ def _rank_main(rank: int, port: int, results: mp.Queue) -> None:
         )
         reduced = communicator.all_reduce(gpu_value)
         record["host_staged_gpu_all_reduce"] = reduced.cpu().item()
+        fast_all_reduce = SharedMemoryAllReduce(
+            group=None, device=rank, max_size_bytes=1024 * 1024
+        )
+        fast_results = {}
+        for dtype in (torch.float32, torch.float16, torch.bfloat16):
+            typed_value = torch.tensor(
+                [float(rank + 1)], dtype=dtype, device=f"cuda:{rank}"
+            )
+            fast_reduced = fast_all_reduce.all_reduce(typed_value)
+            fast_results[str(dtype)] = fast_reduced.float().cpu().item()
+        record["shared_memory_gpu_all_reduce"] = fast_results
 
         gather_input = torch.tensor(
             [float(rank * 2 + 1), float(rank * 2 + 2)], device=f"cuda:{rank}"
         )
         gathered = communicator.all_gather(gather_input, dim=0)
         record["host_staged_gpu_all_gather"] = gathered.cpu().tolist()
+        gathered_to_zero = communicator.gather(gather_input, dst=0, dim=0)
+        record["host_staged_gpu_gather"] = (
+            gathered_to_zero.cpu().tolist() if gathered_to_zero is not None else None
+        )
 
         scatter_input = torch.full((4,), float(rank + 1), device=f"cuda:{rank}")
         scattered = communicator.reduce_scatter(scatter_input, dim=0)
@@ -70,6 +85,7 @@ def _rank_main(rank: int, port: int, results: mp.Queue) -> None:
             point_to_point = communicator.recv((1,), torch.float32, src=0).cpu().item()
         communicator.barrier()
         record["host_staged_gpu_point_to_point"] = point_to_point
+        fast_all_reduce.destroy()
 
         # Do not pass a HIP tensor directly to Gloo on Windows. The current
         # PyTorch wheel terminates the process with native exception 0xC0000005
@@ -84,7 +100,15 @@ def _rank_main(rank: int, port: int, results: mp.Queue) -> None:
         record["passed"] = (
             record["cpu_all_reduce"] == expected
             and record["host_staged_gpu_all_reduce"] == expected
+            and record["shared_memory_gpu_all_reduce"]
+            == {
+                "torch.float32": expected,
+                "torch.float16": expected,
+                "torch.bfloat16": expected,
+            }
             and record["host_staged_gpu_all_gather"] == [1.0, 2.0, 3.0, 4.0]
+            and record["host_staged_gpu_gather"]
+            == ([1.0, 2.0, 3.0, 4.0] if rank == 0 else None)
             and record["host_staged_gpu_reduce_scatter"] == [3.0, 3.0]
             and record["host_staged_gpu_broadcast"] == 7.0
             and record["host_staged_gpu_point_to_point"] == 11.0

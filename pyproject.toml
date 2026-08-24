@@ -10,9 +10,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 
+[project.entry-points."vllm.platform_plugins"]
+windows_amd_multigpu = "windows_amd_vllm_multigpu.platform_plugin:windows_amd_platform_plugin"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

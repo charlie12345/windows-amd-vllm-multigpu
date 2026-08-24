@@ -14,12 +14,22 @@ if (-not (Test-Path -LiteralPath $ProbePython)) {
     throw 'Run scripts\bootstrap-nightly.ps1 first.'
 }
 
+Write-Host 'Building the native HIP transport' -ForegroundColor Cyan
+& (Join-Path $PSScriptRoot 'build-native.cmd')
+if ($LASTEXITCODE -ne 0) {
+    throw "Native build failed with exit code $LASTEXITCODE."
+}
+
 $Probes = @(
     'probes\environment_probe.py',
+    'probes\hip_shared_memory_probe.py',
     'probes\two_rank_gloo.py'
 )
 if (-not $SkipBenchmark) {
-    $Probes += 'probes\benchmark_host_staged.py'
+    $Probes += @(
+        'probes\benchmark_host_staged.py',
+        'probes\benchmark_stream_all_reduce.py'
+    )
 }
 
 foreach ($Probe in $Probes) {
@@ -29,4 +39,3 @@ foreach ($Probe in $Probes) {
         throw "$Probe failed with exit code $LASTEXITCODE."
     }
 }
-

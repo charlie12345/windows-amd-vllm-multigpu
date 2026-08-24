@@ -1,12 +1,18 @@
 {
   "python": "3.12",
   "numpy": "2.4.4",
+  "cmake": "4.4.2",
+  "ninja": "1.13.0",
   "index_url": "https://rocm.nightlies.amd.com/whl-multi-arch/",
   "torch": "2.11.0+rocm7.15.0a20260728",
+  "torchvision": "0.26.0+rocm7.15.0a20260728",
   "rocm": "7.15.0a20260728",
   "amd_torch_device": "amd-torch-device-gfx1201==2.11.0+rocm7.15.0a20260728",
   "rocm_extra": "devel,device-gfx1201",
   "gpu_arch": "gfx1201",
+  "vllm_fork": "https://github.com/charlie12345/vLLM_for_AMD.git",
+  "vllm_branch": "windows-rocm",
+  "vllm_commit": "fb9fb8c5aeaed96c91eef5cb48743a96f8496907",
   "therock_reference_commit": "89553ce3746eda74ade42557470d25e37c91b6f0",
   "therock_gloo_enable_commit": "3e01a5224a3d5a2ce1c6d2d4f91a15478e2d7ba5"
 }
