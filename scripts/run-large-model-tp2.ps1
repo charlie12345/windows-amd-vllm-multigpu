@@ -48,11 +48,13 @@ $env:NCCL_COMM_BLOCKING = '1'
 $env:NCCL_ALGO = 'Ring'
 $env:NCCL_PROTO = 'Simple'
 $env:WAVMG_TRACE_COLLECTIVES = '1'
+$env:VLLM_ROCM_USE_RDNA_W4A16 = '1'
 
-Write-Host "Running the pinned 24B BF16 model with TP2: $ModelPath" -ForegroundColor Cyan
+Write-Host "Running the pinned 24B AWQ W4A16 model with TP2: $ModelPath" -ForegroundColor Cyan
 & $Python (Join-Path $ProjectRoot 'probes\vllm_tp_output.py') `
     --tp 2 `
     --model $ModelPath `
+    --quantization awq `
     --max-model-len $MaxModelLen `
     --max-num-batched-tokens $MaxModelLen `
     --max-tokens $MaxTokens `

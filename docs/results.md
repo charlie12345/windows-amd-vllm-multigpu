@@ -111,9 +111,61 @@ speedup over TP1, and was about 4.6% faster than RCCL-only TP2. This is a small
 model and one-token decode benchmark; larger models, batches, and contexts need
 separate measurement.
 
-## Large-model TP2 validation
+## Current 24B AWQ W4A16 validation
 
-The large-model validation used
+The current reproducible checkpoint is
+`stelterlab/Mistral-Small-24B-Instruct-2501-AWQ` at revision
+`cbda099649a0188dd888d44f0e4964d8d982dc9a`. Its three weight shards total
+14,234,370,648 bytes (13.26 GiB). The model metadata declares AWQ, 4-bit
+weights, group size 128, asymmetric zero points, and GEMM layout.
+
+Both one-GPU and two-GPU validation selected
+`RDNAHybridW4A16LinearKernel for AutoAWQMarlinLinearMethod`. The TP2 run loaded
+6.76 GiB of model memory per worker, retained about 21.5 GiB of KV cache per
+GPU, and emitted D3D12 AllReduce plus RCCL AllGather routing traces. TP1 and TP2
+returned identical token IDs and text for both deterministic prompts.
+
+### Short decode and concurrency results
+
+The warmed benchmark used 32 input tokens, 32 output tokens, three warmups, ten
+measured iterations, BF16 activations, automatic `ROCM_ATTN`, and no prefix
+cache. Approximate output tokens/s is `batch_size * 32 / average latency` and
+includes prefill plus decode.
+
+| Batch | Configuration | Average | p50 | p90 | Output tokens/s |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | TP1 eager/O0 | 0.9282 s | 0.9283 s | 0.9331 s | 34.47 |
+| 1 | TP2 D3D12 + RCCL eager/O0 | 1.0773 s | 1.0697 s | 1.0994 s | 29.70 |
+| 1 | TP2 RCCL eager/O0 | 0.8912 s | 0.8930 s | 0.8959 s | 35.91 |
+| 1 | TP2 RCCL async + O1 | 0.8424 s | 0.8437 s | 0.8449 s | 37.99 |
+| 8 | TP1 eager/O0 | 3.2915 s | 3.1502 s | 3.8286 s | 77.78 |
+| 8 | TP2 RCCL eager/O0 | 2.4699 s | 2.4550 s | 2.5282 s | 103.65 |
+| 8 | TP2 RCCL async + O1 | 2.3912 s | 2.3069 s | 2.4194 s | 107.06 |
+
+At batch 8, tuned TP2 improved aggregate output throughput by 37.6% over the
+TP1 eager baseline. Quantization changed the best transport for this workload:
+RCCL-only beat the hybrid because the AWQ model's small reductions do not
+amortize the D3D12 cross-adapter path.
+
+The TP2 tuning A/B tests at batch 1 were:
+
+| Change | Output tokens/s | Result versus tuned BF16/auto |
+| --- | ---: | ---: |
+| Async scheduling without Inductor | 36.43 | -4.1% |
+| Async scheduling + O1, BF16, auto attention | 37.99 | reference |
+| Change activations to FP16 | 36.15 | -4.8% |
+| Force `TRITON_ATTN` | 35.67 | -6.1% |
+
+The Windows platform keeps static graph mode disabled. To make Inductor O1
+usable, collectives are presented as opaque `torch.ops.vllm` compiler
+boundaries while their eager implementations continue to call the native RCCL
+or D3D12 transport. The pinned vLLM nightly also requires
+`--compilation-config '{"compile_sizes":[]}'` to enable dynamic-range lookup;
+otherwise its piecewise backend rejects a valid 512-token shape.
+
+## Historical BF16 large-model TP2 validation
+
+The earlier large-model validation used
 `mistralai/Mistral-Small-24B-Instruct-2501` at revision
 `9527884be6e5616bdd54de542f9ae13384489724`, BF16, TP2, a 512-token model
 limit, and 92% GPU-memory utilization. The ten selected safetensor shards are
@@ -147,7 +199,7 @@ default 64 MiB D3D12 heap. The hybrid now routes such tensors to RCCL. The
 targeted two-rank overflow probe passed exact FP16 values with 1 MiB on D3D12
 and 80 MiB on RCCL.
 
-### 24B transport speed comparison
+### Historical 24B BF16 transport speed comparison
 
 The end-to-end latency benchmark used the same model and memory settings,
 batch size 1, 32 input tokens, 16 output tokens, 3 warmup iterations, and 10

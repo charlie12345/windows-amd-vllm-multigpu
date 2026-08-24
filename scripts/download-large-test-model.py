@@ -1,8 +1,9 @@
-"""Download only the pinned Hugging Face shards needed for the TP2 test."""
+"""Download only the pinned 4-bit Hugging Face shards needed for TP tests."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 from pathlib import Path
@@ -11,9 +12,9 @@ from huggingface_hub import HfApi, snapshot_download
 from huggingface_hub.errors import LocalEntryNotFoundError
 
 
-DEFAULT_REPO = "mistralai/Mistral-Small-24B-Instruct-2501"
-DEFAULT_REVISION = "9527884be6e5616bdd54de542f9ae13384489724"
-EXPECTED_WEIGHT_BYTES = 47_144_848_872
+DEFAULT_REPO = "stelterlab/Mistral-Small-24B-Instruct-2501-AWQ"
+DEFAULT_REVISION = "cbda099649a0188dd888d44f0e4964d8d982dc9a"
+EXPECTED_WEIGHT_BYTES = 14_234_370_648
 ALLOW_PATTERNS = (
     "README.md",
     "SYSTEM_PROMPT.txt",
@@ -41,13 +42,29 @@ def cache_root(cache_dir: str | None) -> Path:
 def validate_snapshot(model_path: Path) -> None:
     shards = sorted(model_path.glob("model-*.safetensors"))
     required = (model_path / "config.json", model_path / "model.safetensors.index.json")
-    if len(shards) != 10 or not all(path.is_file() for path in required):
+    if len(shards) != 3 or not all(path.is_file() for path in required):
         raise RuntimeError(f"Incomplete model snapshot at {model_path}")
     shard_bytes = sum(path.stat().st_size for path in shards)
     if shard_bytes != EXPECTED_WEIGHT_BYTES:
         raise RuntimeError(
             f"Expected {EXPECTED_WEIGHT_BYTES} weight bytes, found {shard_bytes}"
         )
+    config = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
+    quant = config.get("quantization_config", {})
+    expected_quant = {
+        "quant_method": "awq",
+        "bits": 4,
+        "group_size": 128,
+        "zero_point": True,
+        "version": "gemm",
+    }
+    mismatches = {
+        key: (quant.get(key), expected)
+        for key, expected in expected_quant.items()
+        if quant.get(key) != expected
+    }
+    if mismatches:
+        raise RuntimeError(f"Unexpected AWQ configuration: {mismatches}")
 
 
 def main() -> int:
@@ -84,7 +101,7 @@ def main() -> int:
         reserve_bytes = 5 * 1024**3
         if free_bytes < EXPECTED_WEIGHT_BYTES + reserve_bytes:
             raise RuntimeError(
-                "The pinned model needs about 43.9 GiB plus cache overhead; "
+                "The pinned model needs about 13.3 GiB plus cache overhead; "
                 f"only {free_bytes / 1024**3:.1f} GiB is free at {root}."
             )
         info = HfApi().model_info(args.repo, revision=args.revision)
@@ -95,7 +112,7 @@ def main() -> int:
         license_name = (info.card_data or {}).get("license")
         print(
             f"Downloading {args.repo}@{args.revision} "
-            f"(license={license_name}, weights=43.9 GiB)"
+            f"(license={license_name}, weights=13.3 GiB, format=AWQ W4A16 G128)"
         )
 
     model_path = Path(

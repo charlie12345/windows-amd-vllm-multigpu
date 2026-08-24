@@ -16,6 +16,7 @@ def main() -> int:
     parser.add_argument("--max-tokens", type=int, default=8)
     parser.add_argument("--max-num-batched-tokens", type=int)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    parser.add_argument("--quantization", choices=("awq",))
     parser.add_argument(
         "--use-rccl", action=argparse.BooleanOptionalAction, default=None
     )
@@ -51,6 +52,8 @@ def main() -> int:
     llm_options = {}
     if args.max_num_batched_tokens is not None:
         llm_options["max_num_batched_tokens"] = args.max_num_batched_tokens
+    if args.quantization is not None:
+        llm_options["quantization"] = args.quantization
     llm = LLM(
         model=args.model,
         tensor_parallel_size=args.tp,
@@ -75,6 +78,7 @@ def main() -> int:
         result = {
             "tensor_parallel_size": args.tp,
             "model": args.model,
+            "quantization": args.quantization,
             "load_seconds": load_seconds,
             "generation_seconds": generation_seconds,
             "use_rccl": os.environ.get("WAVMG_USE_RCCL") == "1",

@@ -14,7 +14,8 @@ distribution checklist, not legal advice.
 | RCCL files added by this Windows port | Windows AMD vLLM Multi-GPU contributors, added inside the RCCL-derived tree | BSD-3-Clause, matching the surrounding RCCL project; each added source carries an SPDX identifier | Included inside the version-pinned RCCL patch |
 | HIPIFY | ROCm HIPIFY at `f1af27c6e0c43e1a9663dc3650dcff54f980e6a6` | Its upstream license | Fetched into ignored `sandbox/hipify`; no HIPIFY source is redistributed |
 | ROCm, HIP, PyTorch, Triton, Vulkan SDK, Windows SDK, and build tools | Their respective publishers | Their respective upstream terms | Installed/fetched dependencies; not committed or relicensed here |
-| Mistral Small 24B test weights | `mistralai/Mistral-Small-24B-Instruct-2501` at `9527884be6e5616bdd54de542f9ae13384489724` | Publisher-declared Apache-2.0 | Downloaded to the user's Hugging Face cache; never committed or bundled |
+| Current Mistral Small 24B AWQ test weights | `stelterlab/Mistral-Small-24B-Instruct-2501-AWQ` at `cbda099649a0188dd888d44f0e4964d8d982dc9a`, derived from Mistral Small 24B | Quantizer-publisher-declared Apache-2.0; retain base-model attribution | Downloaded to the user's Hugging Face cache; never committed or bundled |
+| Historical Mistral Small 24B BF16 baseline | `mistralai/Mistral-Small-24B-Instruct-2501` at `9527884be6e5616bdd54de542f9ae13384489724` | Model-publisher-declared Apache-2.0 | Results and pin retained; weights are not bundled |
 
 The two shorter `LICENSES/RCCL-LICENSE.txt` and
 `LICENSES/RCCL-NOTICES.txt` files are convenient distribution copies and a

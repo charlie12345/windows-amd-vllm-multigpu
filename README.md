@@ -158,78 +158,148 @@ backend on each rank. It is enabled by the large-model validation script.
 ## Large-model proof of tensor parallelism
 
 The pinned large test is
-[`mistralai/Mistral-Small-24B-Instruct-2501`](https://huggingface.co/mistralai/Mistral-Small-24B-Instruct-2501)
-at revision `9527884be6e5616bdd54de542f9ae13384489724`. It is Apache-2.0,
-contains 24B BF16 parameters, and its model card reports roughly 55 GB of GPU
-memory. The selected ten sharded weight files total 47,144,848,872 bytes
-(43.9 GiB), which exceeds one R9700's 31.86 GiB VRAM.
+[`stelterlab/Mistral-Small-24B-Instruct-2501-AWQ`](https://huggingface.co/stelterlab/Mistral-Small-24B-Instruct-2501-AWQ)
+at revision `cbda099649a0188dd888d44f0e4964d8d982dc9a`. It is an Apache-2.0
+AWQ quantization of Mistral Small 24B with 4-bit weights, 16-bit activations,
+128-value groups, and asymmetric zero points. Its three selected weight shards
+total 14,234,370,648 bytes (13.26 GiB).
 
-Download only the required sharded representation; the script deliberately
-excludes the duplicate 47 GB `consolidated.safetensors`:
+Download and validate the exact pinned revision:
 
 ```powershell
 .\.venv-vllm\Scripts\python.exe .\scripts\download-large-test-model.py
 .\scripts\run-large-model-tp2.ps1
 ```
 
-Allow about 50 GiB of free disk space. Enabling Windows Developer Mode avoids
-Hugging Face's degraded no-symlink cache warning but is not required for one
-revision.
+Allow about 15 GiB of free disk space. Model files remain in the Hugging Face
+cache and are never added to this repository. The downloader verifies the
+revision, exact shard count and byte total, and AWQ quantization metadata.
 
-The validated TP2 run loaded all 43.91 GiB of checkpoint weights and reported
-21.96 GiB of model memory per worker. Each GPU used 22.11 GiB for weights plus
-runtime state, peaked at 0.45 GiB of activation memory, and retained 6.76 GiB
-of KV cache at 92% configured utilization. Both ranks logged D3D12 AllReduce
-and RCCL AllGather. The model generated:
+The validated TP2 run selected vLLM's native RDNA hybrid W4A16 kernel, loaded
+6.76 GiB of model memory per worker, and retained about 21.5 GiB of KV cache
+per GPU at 92% configured utilization. Both ranks logged real GPU collective
+traffic. TP1 and TP2 produced identical deterministic token IDs and text:
 
 - `The capital of France is` → `Paris. It is known for its iconic landmarks
   such as the Eiffel Tower`
 - `Two plus two equals` → `four. This is a mathematical fact. It is not a
   matter of opinion.`
 
-This proves model sharding because the unquantized checkpoint cannot reside on
-either individual GPU. A separate exact-value probe also passed 1 MiB through
-D3D12 and automatically routed an 80 MiB operation through RCCL when it
-exceeded the configured 64 MiB D3D12 heap.
+The earlier 43.91 GiB BF16 test remains recorded in `docs/results.md` as proof
+that a checkpoint too large for either 31.86 GiB GPU was successfully sharded.
+The AWQ test is now the default because it is much faster and practical for
+repeatable benchmarking.
 
 ## Speed testing
 
-Run a warmed end-to-end comparison of the hybrid and RCCL-only paths on the
-24B model:
+The benchmark supports TP1, TP2 hybrid, TP2 RCCL-only, and four optimization
+profiles. The baseline command below compares all device layouts:
 
 ```powershell
-.\scripts\benchmark-large-model.ps1 `
-    -Mode Both `
+.\scripts\benchmark-awq-decode.ps1 `
+    -Mode All `
+    -Profile Baseline `
     -InputLen 32 `
-    -OutputLen 16 `
+    -OutputLen 32 `
     -BatchSize 1 `
     -WarmupIterations 3 `
     -Iterations 10
 ```
 
-The script loads the exact same TP2 model/configuration for each case, prints
-average and percentile latency, and writes JSON files under
-`logs\large-model-benchmark-*`. `Hybrid` uses D3D12 AllReduce plus RCCL;
-`Rccl` disables only D3D12. The 24B BF16 model cannot be benchmarked at TP1 on
-a 32 GiB card, so this comparison measures transport improvement, not TP1
-versus TP2 scaling.
+Use the tested TP2 decode profile with:
 
-Use `-BatchSize 4` to emphasize aggregate throughput, provided
-`InputLen * BatchSize` stays within `MaxNumBatchedTokens`. For low-noise results,
-close games and GPU applications, keep the power/clock policy fixed, and run
-the command at least three times.
+```powershell
+.\scripts\benchmark-awq-decode.ps1 `
+    -Mode Rccl `
+    -Profile TunedO1 `
+    -InputLen 32 `
+    -OutputLen 32 `
+    -BatchSize 8 `
+    -WarmupIterations 3 `
+    -Iterations 10
+```
 
-Reference result from the command above (one paired run on the reference
-machine):
+Start an OpenAI-compatible local server with the same winning TP2 settings:
 
-| Transport | Average | p50 | p90 | Approx. output tokens/s |
-| --- | ---: | ---: | ---: | ---: |
-| Hybrid D3D12 + RCCL | 1.530 s | 1.538 s | 1.544 s | 10.46 |
-| RCCL NET/Socket only | 2.594 s | 2.584 s | 2.666 s | 6.17 |
+```powershell
+.\scripts\serve-awq-tp2.ps1 -Profile TunedO1
+```
 
-The hybrid was 1.69x faster with 41.0% lower average latency. Approximate
-output tokens/s is `BatchSize * OutputLen / average latency`; it includes both
-prefill and decode time and is not a server-concurrency benchmark.
+The server binds to `127.0.0.1:8000` by default. The default
+`MaxNumBatchedTokens=2048` favors interactive inter-token latency; pass
+`-MaxNumBatchedTokens 16384` for a throughput-oriented A/B test.
+
+`TunedO1` enables vLLM async scheduling and Inductor `-O1`. Windows TP2 keeps
+CUDA/HIP graph capture disabled because the native collective transports are
+not graph-safe. The plugin exposes collectives as opaque vLLM custom ops so
+Inductor can compile surrounding model code without tracing Python `ctypes`
+stream handles. The first process start compiles and caches the graph; compare
+steady-state iterations, not startup time.
+
+Reference results on two Radeon AI PRO R9700 GPUs, 32 input and 32 output
+tokens, after three warmups:
+
+| Workload | Configuration | Average | p50 | p90 | Output tokens/s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Batch 1 | TP1 eager/O0 | 0.9282 s | 0.9283 s | 0.9331 s | 34.47 |
+| Batch 1 | TP2 RCCL eager/O0 | 0.8912 s | 0.8930 s | 0.8959 s | 35.91 |
+| Batch 1 | TP2 RCCL async + O1 | 0.8424 s | 0.8437 s | 0.8449 s | 37.99 |
+| Batch 8 | TP1 eager/O0 | 3.2915 s | 3.1502 s | 3.8286 s | 77.78 |
+| Batch 8 | TP2 RCCL eager/O0 | 2.4699 s | 2.4550 s | 2.5282 s | 103.65 |
+| Batch 8 | TP2 RCCL async + O1 | 2.3912 s | 2.3069 s | 2.4194 s | 107.06 |
+
+At batch 8, tuned TP2 delivered 37.6% more aggregate output throughput than
+the TP1 eager baseline. At batch 1, communication overhead limits scaling, but
+tuned TP2 was still 10.2% faster. Use TP1 when the model fits and minimum
+single-request latency is the only objective; use TP2 for concurrency, larger
+KV cache, models that do not fit one GPU, or the measured batch-throughput
+gain.
+
+### Decode-related vLLM flags
+
+These settings are verified for this AWQ checkpoint and machine:
+
+- `--quantization awq` plus `VLLM_ROCM_USE_RDNA_W4A16=1` selects the native
+  RDNA W4A16 decode kernel. The environment variable currently defaults on,
+  but setting it explicitly makes runs reproducible.
+- `--async-scheduling -O1 --compilation-config '{"compile_sizes":[]}'` is the
+  fastest tested TP2 profile. Async scheduling alone reached 36.43 tokens/s;
+  the full profile reached 37.99 tokens/s.
+- Keep `--dtype bfloat16`. An otherwise identical FP16 run reached only 36.15
+  tokens/s.
+- Leave `--attention-backend` on `auto`; it selects `ROCM_ATTN`. Forcing
+  `TRITON_ATTN` reached only 35.67 tokens/s.
+- Use RCCL-only (`WAVMG_USE_D3D12=0`) for this quantized model. Its small
+  reductions do not amortize the D3D12 cross-adapter route. This is
+  workload-specific: D3D12 was substantially faster for the earlier BF16
+  checkpoint and remains useful for larger collective payloads.
+
+Additional flags can help particular serving workloads but are not universal
+decode speedups:
+
+- `--max-num-batched-tokens 2048` favors inter-token latency under mixed
+  prefill/decode load. Values above 8192 favor aggregate throughput; benchmark
+  them with the intended context lengths and concurrency.
+- `--max-num-seqs` raises or caps request concurrency. It increases throughput
+  only when enough requests are waiting.
+- `--enable-prefix-caching` avoids repeated prefill work for shared prefixes;
+  it does not accelerate unique-token decode.
+- `--speculative-config '{"method":"ngram","num_speculative_tokens":4,"prompt_lookup_min":2,"prompt_lookup_max":4}'`
+  can help prompts whose generated text repeats prompt n-grams. Acceptance rate
+  determines whether it wins.
+- `--kv-cache-dtype fp8` doubles KV-cache capacity on ROCm and may help
+  long-context attention bandwidth. It can affect numerical quality and has
+  not improved this short-context test, so keep `auto` unless a long-context
+  A/B test wins.
+
+`--gpu-memory-utilization`, `--kv-cache-memory-bytes`, and
+`--safetensors-load-strategy=prefetch` tune capacity or startup rather than
+steady decode. `--enforce-eager` and `-O0` are useful compatibility baselines,
+but they disable the measured Inductor improvement.
+
+For low-noise results, close games and GPU applications, keep the power/clock
+policy fixed, and run each command at least three times. JSON results are
+written beneath `logs/awq-decode-benchmark-*` and intentionally ignored by Git.
 
 To isolate collective performance from model compute:
 

@@ -23,9 +23,12 @@ class WindowsAmdMultiGpuPlatform(RocmPlatform):
 
     @classmethod
     def use_custom_op_collectives(cls) -> bool:
-        # Keep collectives as ordinary Python calls. The mapped-memory transport
-        # is stream ordered, but is not currently safe for graph capture.
-        return False
+        # Present collectives to torch.compile as opaque vllm custom ops. The
+        # registered eager implementation still dispatches to this project's
+        # Python transport wrapper, so ctypes stream handles never enter a
+        # Dynamo graph. Static graph mode remains disabled below; this change
+        # creates a compiler boundary but does not capture RCCL or D3D12 calls.
+        return True
 
     @classmethod
     def support_static_graph_mode(cls) -> bool:

@@ -66,6 +66,7 @@ $env:VLLM_WORKER_MULTIPROC_METHOD = 'spawn'
 $env:VLLM_USE_V2_MODEL_RUNNER = '0'
 $env:VLLM_DISTRIBUTED_USE_SPLIT_GROUP = '0'
 $env:VLLM_PLUGINS = 'windows_amd_multigpu'
+$env:VLLM_ROCM_USE_RDNA_W4A16 = '1'
 $env:WAVMG_ENABLE = '1'
 $env:WAVMG_USE_RCCL = '1'
 $env:WAVMG_RCCL_DLL = $RcclDll
@@ -103,6 +104,7 @@ function Invoke-LatencyCase {
         --tensor-parallel-size 2 `
         --distributed-executor-backend mp `
         --dtype bfloat16 `
+        --quantization awq `
         --max-model-len $MaxModelLen `
         --max-num-batched-tokens $MaxNumBatchedTokens `
         --gpu-memory-utilization $GpuMemoryUtilization `

@@ -28,7 +28,9 @@ ROCm, HIP, PyTorch, Vulkan, the Windows SDK, model weights, and other external
 dependencies are separate works distributed under their respective terms.
 They are not relicensed by this repository's Apache-2.0 license.
 
-The optional Mistral Small 24B test weights are downloaded directly from
-Hugging Face, are licensed by their publisher under Apache-2.0 at the pinned
-revision recorded in pins/nightly-2026-07-28.json, and are not distributed by
-this repository.
+The optional current test weights are the AWQ quantization published as
+stelterlab/Mistral-Small-24B-Instruct-2501-AWQ, derived from Mistral Small 24B.
+The model card declares Apache-2.0. The exact quantized revision and the
+historical Mistral BF16 baseline revision are recorded in
+pins/nightly-2026-07-28.json. Model weights are downloaded directly from
+Hugging Face and are not distributed by this repository.

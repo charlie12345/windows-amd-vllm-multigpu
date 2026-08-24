@@ -18,10 +18,14 @@
   "vllm_fork": "https://github.com/charlie12345/vLLM_for_AMD.git",
   "vllm_branch": "windows-rocm",
   "vllm_commit": "fb9fb8c5aeaed96c91eef5cb48743a96f8496907",
-  "large_test_model": "mistralai/Mistral-Small-24B-Instruct-2501",
-  "large_test_model_revision": "9527884be6e5616bdd54de542f9ae13384489724",
+  "large_test_model": "stelterlab/Mistral-Small-24B-Instruct-2501-AWQ",
+  "large_test_model_revision": "cbda099649a0188dd888d44f0e4964d8d982dc9a",
   "large_test_model_license": "apache-2.0",
-  "large_test_model_weight_bytes": 47144848872,
+  "large_test_model_quantization": "AWQ W4A16 G128 asymmetric",
+  "large_test_model_weight_bytes": 14234370648,
+  "bf16_baseline_model": "mistralai/Mistral-Small-24B-Instruct-2501",
+  "bf16_baseline_model_revision": "9527884be6e5616bdd54de542f9ae13384489724",
+  "bf16_baseline_model_weight_bytes": 47144848872,
   "therock_reference_commit": "89553ce3746eda74ade42557470d25e37c91b6f0",
   "therock_gloo_enable_commit": "3e01a5224a3d5a2ce1c6d2d4f91a15478e2d7ba5"
 }
