@@ -150,6 +150,13 @@ class D3D12AllReduce:
         self._own.wait(consumed_value, stream_pointer)
         return output
 
+    def can_handle(self, tensor: torch.Tensor) -> bool:
+        """Return whether this tensor fits the validated D3D12 fast path."""
+        return (
+            tensor.dtype in (torch.float16, torch.float32, torch.bfloat16)
+            and tensor.numel() * tensor.element_size() <= self.max_size_bytes
+        )
+
     def _close_buffers(self) -> None:
         for name in ("_peer", "_own"):
             shared = getattr(self, name, None)

@@ -96,4 +96,15 @@ if ($LASTEXITCODE -ne 0) {
     throw 'RCCL PyTorch tensor validation failed.'
 }
 
+$D3D12Dll = Join-Path $ProjectRoot 'build\native\wavmg_d3d12_v1.dll'
+if (Test-Path -LiteralPath $D3D12Dll) {
+    Write-Host 'Validating D3D12 fast-path and RCCL overflow routing' -ForegroundColor Cyan
+    $env:WAVMG_D3D12_DLL = $D3D12Dll
+    $env:WAVMG_RCCL_DLL = Join-Path $ProjectRoot 'build\rccl-windows\rccl.dll'
+    & $Python (Join-Path $ProjectRoot 'probes\hybrid_all_reduce_probe.py')
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Hybrid AllReduce overflow validation failed.'
+    }
+}
+
 Write-Host "RCCL validation passed. Results: $RunRoot" -ForegroundColor Green

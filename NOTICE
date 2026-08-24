@@ -7,6 +7,10 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 This project contains compatibility patches and integration code for vLLM,
 which is licensed under the Apache License, Version 2.0:
 https://github.com/vllm-project/vllm
+The exact LICENSE and NOTICE from the pinned vLLM fork revision are reproduced
+as LICENSES/VLLM-UPSTREAM-LICENSE.txt and
+LICENSES/VLLM-UPSTREAM-NOTICE.txt. The patch under patches/vllm modifies the
+three files identified in that patch; it is not an unmodified upstream work.
 
 The optional native RCCL build is based on AMD RCCL and NVIDIA NCCL source.
 RCCL/NCCL-derived source patches and binaries remain subject to their
@@ -23,3 +27,8 @@ reproduced in LICENSES/RCCL-NOTICES.txt.
 ROCm, HIP, PyTorch, Vulkan, the Windows SDK, model weights, and other external
 dependencies are separate works distributed under their respective terms.
 They are not relicensed by this repository's Apache-2.0 license.
+
+The optional Mistral Small 24B test weights are downloaded directly from
+Hugging Face, are licensed by their publisher under Apache-2.0 at the pinned
+revision recorded in pins/nightly-2026-07-28.json, and are not distributed by
+this repository.

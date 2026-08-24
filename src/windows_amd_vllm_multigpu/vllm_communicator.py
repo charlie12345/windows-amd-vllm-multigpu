@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 from vllm.distributed.device_communicators.base_device_communicator import (
@@ -37,24 +39,65 @@ class WindowsAmdMultiGpuCommunicator(DeviceCommunicatorBase):
             if self.world_size == 2 and self.rccl is None and self.d3d12 is None
             else None
         )
+        self._trace_enabled = os.environ.get(
+            "WAVMG_TRACE_COLLECTIVES", ""
+        ).lower() in {"1", "true", "yes", "on"}
+        self._traced_operations: set[str] = set()
+        if self._trace_enabled:
+            if self.d3d12 is not None:
+                all_reduce_backend = "d3d12"
+            elif self.rccl is not None:
+                all_reduce_backend = "rccl"
+            elif self.fast_all_reduce is not None:
+                all_reduce_backend = "mapped-host"
+            else:
+                all_reduce_backend = "gloo-host"
+            other_backend = "rccl" if self.rccl is not None else "gloo-host"
+            print(
+                "WAVMG_TRANSPORT "
+                f"rank={self.rank_in_group} world_size={self.world_size} "
+                f"all_reduce={all_reduce_backend} "
+                f"other_collectives={other_backend}",
+                flush=True,
+            )
+
+    def _trace_once(self, operation: str, backend: str) -> None:
+        trace_key = f"{operation}:{backend}"
+        if not self._trace_enabled or trace_key in self._traced_operations:
+            return
+        self._traced_operations.add(trace_key)
+        print(
+            f"WAVMG_COLLECTIVE rank={self.rank_in_group} "
+            f"operation={operation} backend={backend}",
+            flush=True,
+        )
 
     def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
-        if self.d3d12 is not None:
+        if self.d3d12 is not None and self.d3d12.can_handle(input_):
+            self._trace_once("all_reduce", "d3d12")
             return self.d3d12.all_reduce(input_)
         if self.rccl is not None:
+            backend = "rccl-d3d12-fallback" if self.d3d12 is not None else "rccl"
+            self._trace_once("all_reduce", backend)
             return self.rccl.all_reduce(input_)
         if self.fast_all_reduce is not None:
+            self._trace_once("all_reduce", "mapped-host")
             return self.fast_all_reduce.all_reduce(input_)
+        self._trace_once("all_reduce", "gloo-host")
         return self.transport.all_reduce(input_)
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
         if self.rccl is not None:
+            self._trace_once("all_gather", "rccl")
             return self.rccl.all_gather(input_, dim=dim)
+        self._trace_once("all_gather", "gloo-host")
         return self.transport.all_gather(input_, dim=dim)
 
     def reduce_scatter(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
         if self.rccl is not None:
+            self._trace_once("reduce_scatter", "rccl")
             return self.rccl.reduce_scatter(input_, dim=dim)
+        self._trace_once("reduce_scatter", "gloo-host")
         return self.transport.reduce_scatter(input_, dim=dim)
 
     def gather(
@@ -64,7 +107,9 @@ class WindowsAmdMultiGpuCommunicator(DeviceCommunicatorBase):
 
     def broadcast(self, tensor: torch.Tensor, src: int = 0) -> torch.Tensor:
         if self.rccl is not None:
+            self._trace_once("broadcast", "rccl")
             return self.rccl.broadcast(tensor, src=src)
+        self._trace_once("broadcast", "gloo-host")
         return self.transport.broadcast(tensor, src=src)
 
     def send(self, tensor: torch.Tensor, dst: int | None = None) -> None:

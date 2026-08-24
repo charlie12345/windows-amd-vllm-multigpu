@@ -110,3 +110,56 @@ On this specific workload the hybrid reduced average latency by 24.1%, a 1.32x
 speedup over TP1, and was about 4.6% faster than RCCL-only TP2. This is a small
 model and one-token decode benchmark; larger models, batches, and contexts need
 separate measurement.
+
+## Large-model TP2 validation
+
+The large-model validation used
+`mistralai/Mistral-Small-24B-Instruct-2501` at revision
+`9527884be6e5616bdd54de542f9ae13384489724`, BF16, TP2, a 512-token model
+limit, and 92% GPU-memory utilization. The ten selected safetensor shards are
+47,144,848,872 bytes (43.91 GiB). That exceeds the 31.86 GiB physical capacity
+of either individual R9700.
+
+The run completed model initialization, deterministic generation, and clean
+shutdown with these measurements:
+
+| Observation | Result |
+| --- | ---: |
+| Checkpoint size reported by vLLM | 43.91 GiB |
+| Model memory loaded per TP worker | 21.96 GiB |
+| Weights plus non-torch memory per GPU | 22.11 GiB |
+| Peak activation memory per GPU | 0.45 GiB |
+| KV cache per GPU | 6.76 GiB |
+| Full `LLM(...)` initialization | 61.07 s |
+| Two prompts, 16 output tokens each | 5.97 s |
+
+The first generation includes Triton JIT compilation and is not a steady-state
+throughput benchmark. Rank 0 and rank 1 both emitted transport traces for
+D3D12 AllReduce and RCCL AllGather. The generated continuations were:
+
+- `The capital of France is` → `Paris. It is known for its iconic landmarks
+  such as the Eiffel Tower`
+- `Two plus two equals` → `four. This is a mathematical fact. It is not a
+  matter of opinion.`
+
+An initial uncapped vLLM profile exposed an 80 MiB AllReduce, larger than the
+default 64 MiB D3D12 heap. The hybrid now routes such tensors to RCCL. The
+targeted two-rank overflow probe passed exact FP16 values with 1 MiB on D3D12
+and 80 MiB on RCCL.
+
+### 24B transport speed comparison
+
+The end-to-end latency benchmark used the same model and memory settings,
+batch size 1, 32 input tokens, 16 output tokens, 3 warmup iterations, and 10
+measured iterations in eager/O0 mode:
+
+| Transport | Average | p50 | p90 | Approx. output tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| D3D12 AllReduce + RCCL | 1.5303 s | 1.5381 s | 1.5439 s | 10.46 |
+| RCCL NET/Socket only | 2.5938 s | 2.5840 s | 2.6656 s | 6.17 |
+
+In this paired run the hybrid reduced average latency by 41.0%, a 1.69x
+speedup over RCCL-only. Approximate output tokens/s divides the 16 generated
+tokens by the end-to-end batch latency; it includes prefill and decode. The raw
+benchmark command is reproduced in the README, and repeated runs are advised
+before comparing hardware or driver versions.
