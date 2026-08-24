@@ -4,11 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "windows-amd-vllm-multigpu"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Experimental native-Windows AMD collectives for vLLM"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
+
+[project.urls]
+Repository = "https://github.com/charlie12345/windows-amd-vllm-multigpu"
+Issues = "https://github.com/charlie12345/windows-amd-vllm-multigpu/issues"
 
 [project.entry-points."vllm.platform_plugins"]
 windows_amd_multigpu = "windows_amd_vllm_multigpu.platform_plugin:windows_amd_platform_plugin"

@@ -22,11 +22,15 @@ if ($LASTEXITCODE -ne 0) {
 
 $Probes = @(
     'probes\environment_probe.py',
+    'probes\hip_ipc_probe.py',
+    'probes\d3d12_cross_process_probe.py',
+    'probes\d3d12_all_reduce_probe.py',
     'probes\hip_shared_memory_probe.py',
     'probes\two_rank_gloo.py'
 )
 if (-not $SkipBenchmark) {
     $Probes += @(
+        'probes\benchmark_d3d12_cross_adapter.py',
         'probes\benchmark_host_staged.py',
         'probes\benchmark_stream_all_reduce.py'
     )

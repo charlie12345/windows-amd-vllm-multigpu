@@ -10,9 +10,14 @@ Reference machine: Windows 11, two AMD Radeon AI PRO R9700 (`gfx1201`) GPUs.
 - AMD ROCm wheel train `7.15.0a20260728`
 - vLLM `0.1.dev19487+gfb9fb8c5a.rocm715`, source commit
   `fb9fb8c5aeaed96c91eef5cb48743a96f8496907`
+- RCCL `2.30.7-develop`, rocm-systems commit
+  `ee3bae9a931561506c49dcf82fca52ec4711c34f`
+- HIPIFY commit `f1af27c6e0c43e1a9663dc3650dcff54f980e6a6`
 
-`torch.distributed` and Gloo are available; NCCL/RCCL is not. Two GPUs are
-visible and peer access is false in both directions.
+`torch.distributed` and Gloo are available; the PyTorch wheel has no built-in
+NCCL/RCCL backend. This repository's `ctypes` adapter loads the separately
+built native `rccl.dll`. Two GPUs are visible and peer access is false in both
+directions.
 
 ## Correctness
 
@@ -20,6 +25,25 @@ Two-rank probes pass CPU Gloo all-reduce; native FP32, FP16, and BF16
 shared-memory all-reduce; host-staged all-reduce, all-gather, gather,
 reduce-scatter, broadcast, and point-to-point. Direct GPU Gloo is intentionally
 excluded because it causes a native Windows access violation.
+
+Native Windows RCCL passed exact byte/value checks for:
+
+- AllReduce sum with FP16, FP32, and BF16;
+- AllGather with FP16 and BF16;
+- ReduceScatter sum with FP32 and BF16;
+- Broadcast with FP32;
+- 100 consecutive FP16 AllReduce operations at 1,048,576 elements; and
+- all four adapter operations on a non-default PyTorch HIP stream.
+
+The D3D12 cross-process probe passed exact 1 MiB transfers in both directions,
+including imported cross-adapter fences. The D3D12 two-rank AllReduce then
+passed exact FP16, FP32, and BF16 sums at 4 KiB, 64 KiB, 1 MiB, 8 MiB, and
+64 MiB on a non-default PyTorch HIP stream.
+
+The RCCL vLLM TP2 run returned the same token IDs shown below and shut down
+cleanly. This establishes correctness and integration, not GPU-direct: RCCL's
+topology selected NET/Socket because HIP P2P and SHM device mappings are not
+available on the pinned Windows driver.
 
 The vLLM reference test used `Qwen/Qwen3-0.6B`, two prompts, deterministic
 sampling, and eight output tokens. TP1 and TP2 returned identical token IDs:
@@ -32,7 +56,7 @@ sampling, and eight output tokens. TP1 and TP2 returned identical token IDs:
 Each TP2 worker loaded about 0.57 GiB of model weights versus about 1.12 GiB
 for TP1, confirming that the model was sharded rather than replicated.
 
-## All-reduce transport latency
+## Mapped-host all-reduce transport latency
 
 Representative latency from the stream-ordered native path follows. Windows
 small-message measurements are noisy; these figures establish scale, not a
@@ -55,6 +79,22 @@ Raw transfer probes measured roughly 56 GB/s for each individual pinned-memory
 leg, 26.7 GB/s for an explicit GPU0-to-host-to-GPU1 path, and about 20.6 GB/s
 per rank during simultaneous bidirectional exchange.
 
+## D3D12 and RCCL 64 MiB comparison
+
+These runs compare the native transports on the same two-GPU system. Effective
+bandwidth divides the 64 MiB payload by end-to-end operation latency.
+
+| Path | Average latency | Effective bandwidth |
+| --- | ---: | ---: |
+| D3D12 simultaneous bidirectional exchange, per GPU | 3.84 ms | 17.49 GB/s |
+| D3D12 FP16 AllReduce | 4.63 ms | 14.50 GB/s |
+| RCCL NET/Socket FP16 AllReduce | 36.73 ms | 1.83 GB/s |
+
+For this payload the GPU-driven D3D12 AllReduce is about 7.9x faster than the
+native RCCL socket transport. It uses D3D12 L0/system-memory cross-adapter heaps
+and GPU copy engines; it does not copy tensor payloads on the CPU, but it is not
+direct VRAM P2P.
+
 ## vLLM latency
 
 The model benchmark used batch size 1, an 8-token input, one generated token,
@@ -62,8 +102,11 @@ and 30 measured iterations after warmup:
 
 | Configuration | Average | p50 | p90 |
 | --- | ---: | ---: | ---: |
-| TP1 | 77.44 ms | 77.54 ms | 78.77 ms |
-| TP2 | 60.68 ms | 60.66 ms | 62.51 ms |
+| TP1, one R9700 | 77.75 ms | 77.49 ms | 78.97 ms |
+| TP2, RCCL NET/Socket | 61.82 ms | 61.82 ms | 64.59 ms |
+| TP2, D3D12 AllReduce + RCCL | 59.00 ms | 59.04 ms | 60.59 ms |
 
-On this specific workload TP2 reduced average latency by 21.6%, a 1.28x
-speedup. Larger models and contexts need separate measurement.
+On this specific workload the hybrid reduced average latency by 24.1%, a 1.32x
+speedup over TP1, and was about 4.6% faster than RCCL-only TP2. This is a small
+model and one-token decode benchmark; larger models, batches, and contexts need
+separate measurement.

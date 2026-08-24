@@ -1,0 +1,2492 @@
+diff --git a/projects/rccl/CMakeLists.txt b/projects/rccl/CMakeLists.txt
+index a73a5c34a4b18b535a36ede165b497a897fb8b88..b1cc1c5019669f59a2285327ffb04fd34fac0f3e 100644
+--- a/projects/rccl/CMakeLists.txt
++++ b/projects/rccl/CMakeLists.txt
+@@ -282,9 +282,19 @@ if(ROCM_PATH)
+               ${ROCM_PATH}/llvm)
+ endif()
+ 
+-set(CMAKE_CXX_FLAGS_RELEASE "-O3" CACHE STRING "Release flags" FORCE)
++if(WIN32)
++  # Windows WDDM does not provide the device hostcall path used by assert().
++  # A Release build must therefore remove device assertions from RCCL kernels.
++  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG" CACHE STRING "Release flags" FORCE)
++else()
++  set(CMAKE_CXX_FLAGS_RELEASE "-O3" CACHE STRING "Release flags" FORCE)
++endif()
+ set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -g" CACHE STRING "RelWithDebInfo flags" FORCE)
+-set(CMAKE_C_FLAGS_RELEASE "-O3" CACHE STRING "Release flags" FORCE)
++if(WIN32)
++  set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG" CACHE STRING "Release flags" FORCE)
++else()
++  set(CMAKE_C_FLAGS_RELEASE "-O3" CACHE STRING "Release flags" FORCE)
++endif()
+ set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -g" CACHE STRING "RelWithDebInfo flags" FORCE)
+ 
+ # Check for required dependencies
+@@ -439,10 +449,16 @@ else()
+   message(STATUS "cuMem DMA-BUF export disabled - hipMemGetHandleForAddressRange not found in hip/hip_runtime_api.h")
+ endif()
+ 
+-## Check for hsa-runtime64
+-find_package(hsa-runtime64 REQUIRED)
+-get_target_property(HSA_INCLUDE_PATH hsa-runtime64::hsa-runtime64 INTERFACE_INCLUDE_DIRECTORIES)
+-message(STATUS "HSA runtime: ${HSA_INCLUDE_PATH}")
++## Check for hsa-runtime64. Windows HIP does not expose the Linux ROCr/HSA
++## runtime; its platform transport must use Win32/D3D12 external resources.
++if(NOT NCCL_OS_WINDOWS)
++  find_package(hsa-runtime64 REQUIRED)
++  get_target_property(HSA_INCLUDE_PATH hsa-runtime64::hsa-runtime64 INTERFACE_INCLUDE_DIRECTORIES)
++  message(STATUS "HSA runtime: ${HSA_INCLUDE_PATH}")
++else()
++  set(HSA_INCLUDE_PATH "")
++  message(STATUS "HSA runtime: disabled on Windows")
++endif()
+ 
+ ## Check for amd-smi if ROCm 7.11.0 or newer
+ if(ROCM_VERSION VERSION_GREATER_EQUAL "71100")
+@@ -796,7 +812,9 @@ License: See LICENSE.txt for license information\n")
+ endif()
+ 
+ ## Install RCCL RAS client (built in src/CMakeLists.txt)
+-rocm_install(TARGETS rcclras)
++if(NOT NCCL_OS_WINDOWS)
++  rocm_install(TARGETS rcclras)
++endif()
+ 
+ if(BUILD_TESTS)
+   enable_testing()
+diff --git a/projects/rccl/src/CMakeLists.txt b/projects/rccl/src/CMakeLists.txt
+index 35321715e364c1a83a6248e97484a1a6a892e1fc..7dec7cd7433cdbaca9c13f472696da5336bba48e 100644
+--- a/projects/rccl/src/CMakeLists.txt
++++ b/projects/rccl/src/CMakeLists.txt
+@@ -9,8 +9,11 @@
+ # super-repo root. Use PROJECT_SOURCE_DIR for RCCL-relative paths.
+ set(RCCL_SOURCE_DIR "${PROJECT_SOURCE_DIR}")
+ 
+-# net_ib_cast: populate NET_IB_CAST_SOURCES and NET_IB_CAST_INCLUDE_DIRS
+-add_subdirectory(transport/net_ib_cast)
++# net_ib_cast depends on Linux libibverbs/RDMA APIs. Windows builds retain the
++# socket backend and provide local-GPU transport separately.
++if(NOT NCCL_OS_WINDOWS)
++  add_subdirectory(transport/net_ib_cast)
++endif()
+ 
+ # devcomm: populate DEVCOMM_SOURCES and DEVCOMM_INCLUDE_DIRS
+ add_subdirectory(devcomm)
+@@ -510,6 +513,66 @@ set(SRC_FILES
+ # Prepend src/ to all source files for proper paths from root
+ list(TRANSFORM SRC_FILES PREPEND "src/")
+ 
++if(NCCL_OS_WINDOWS)
++  # These are Linux GPUDirect-RDMA/InfiniBand implementations. They are not
++  # involved in local PCIe GPU collectives and have no native Windows ABI.
++  list(REMOVE_ITEM SRC_FILES
++    src/misc/gdr_peermem.cc
++    src/misc/ibvsymbols.cc
++    src/misc/ibvwrap.cc
++    src/misc/mlx5dvsymbols.cc
++    src/misc/mlx5dvwrap.cc
++    src/misc/ionicdvsymbols.cc
++    src/misc/ionicdvwrap.cc
++    src/transport/net_ib/common.cc
++    src/transport/net_ib/common.h
++    src/transport/net_ib/connect.cc
++    src/transport/net_ib/connect.h
++    src/transport/net_ib/gdr.cc
++    src/transport/net_ib/gin.cc
++    src/transport/net_ib/gin.h
++    src/transport/net_ib/init.cc
++    src/transport/net_ib/net_ib_flush_fault_inject.h
++    src/transport/net_ib/p2p.cc
++    src/transport/net_ib/p2p.h
++    src/transport/net_ib/p2p_resiliency.cc
++    src/transport/net_ib/p2p_resiliency.h
++    src/transport/net_ib/p2p_resiliency_recovery.cc
++    src/transport/net_ib/p2p_resiliency_recovery.h
++    src/transport/net_ib/reg.cc
++    src/transport/net_ib/gdaki/gin_host_gdaki.h
++    src/plugin/tuner/csv_tuner.cc
++    src/plugin/gin.cc
++    src/plugin/gin/gin_v13.cc
++    src/plugin/gin/gin_v14.cc
++    src/plugin/rma.cc
++    src/plugin/rma/rma_v13.cc
++    src/plugin/rma/rma_v14.cc
++    src/gin/gin_host.cc
++    src/gin/gin_host_proxy.cc
++    src/ras/client.cc
++    src/ras/client_support.cc
++    src/ras/collectives.cc
++    src/ras/peers.cc
++    src/ras/ras.cc
++    src/ras/rasnet.cc
++    src/os/linux.cc
++    src/os/linux_ipcsocket.cc
++    src/os/linux_socket_pair.cc)
++
++  list(APPEND SRC_FILES
++    src/os/windows.cc
++    src/os/windows_ipcsocket.cc
++    src/os/windows_socket_pair.cc
++    src/os/windows_optional_plugins.cc)
++
++  # Referenced by proxy.h and nccl_gin.h, but not part of the upstream common
++  # source list. Ensure hipify stages the Windows GIN declarations.
++  list(APPEND SRC_FILES
++    src/include/gin/gin_host_win_stub.h
++    src/include/nccl_device/gin_win_stub.h)
++endif()
++
+ # Conditional source files based on build options
+ #==================================================================================================
+ if(ENABLE_ROCSHMEM_GIN)
+@@ -577,26 +640,26 @@ foreach(SRC_FILE ${SRC_FILES})
+   if (FAULT_INJECTION)
+     add_custom_command(
+       OUTPUT ${HIP_FILE}
+-      COMMAND mkdir -p ${HIP_FILE_DIR}
+-              && ${hipify-perl_executable} -experimental -quiet-warnings ${RCCL_SOURCE_DIR}/${SRC_FILE} -o ${HIP_FILE}
+-              && ${CMAKE_COMMAND} -E env bash ${RCCL_SOURCE_DIR}/cmake/scripts/add_unroll.sh ${HIP_FILE}
+-              && ${CMAKE_COMMAND} -E env bash ${RCCL_SOURCE_DIR}/cmake/scripts/add_faults.sh ${HIP_FILE}
++      COMMAND ${CMAKE_COMMAND} -E make_directory ${HIP_FILE_DIR}
++      COMMAND ${hipify-perl_executable} -experimental -quiet-warnings ${RCCL_SOURCE_DIR}/${SRC_FILE} -o ${HIP_FILE}
++      COMMAND ${CMAKE_COMMAND} -E env bash ${RCCL_SOURCE_DIR}/cmake/scripts/add_unroll.sh ${HIP_FILE}
++      COMMAND ${CMAKE_COMMAND} -E env bash ${RCCL_SOURCE_DIR}/cmake/scripts/add_faults.sh ${HIP_FILE}
+       MAIN_DEPENDENCY ${RCCL_SOURCE_DIR}/${SRC_FILE}
+       COMMENT "Hipifying ${SRC_FILE} -> ${HIP_FILE}"
+     )
+   else()
+     add_custom_command(
+       OUTPUT ${HIP_FILE}
+-      COMMAND mkdir -p ${HIP_FILE_DIR}
+-              && ${hipify-perl_executable} -experimental -quiet-warnings ${RCCL_SOURCE_DIR}/${SRC_FILE} -o ${HIP_FILE}
+-              && ${CMAKE_COMMAND} -E env bash ${RCCL_SOURCE_DIR}/cmake/scripts/add_unroll.sh ${HIP_FILE}
++      COMMAND ${CMAKE_COMMAND} -E make_directory ${HIP_FILE_DIR}
++      COMMAND ${hipify-perl_executable} -experimental -quiet-warnings ${RCCL_SOURCE_DIR}/${SRC_FILE} -o ${HIP_FILE}
++      COMMAND ${CMAKE_COMMAND} -E env bash ${RCCL_SOURCE_DIR}/cmake/scripts/add_unroll.sh ${HIP_FILE}
+       MAIN_DEPENDENCY ${RCCL_SOURCE_DIR}/${SRC_FILE}
+       COMMENT "Hipifying ${SRC_FILE} -> ${HIP_FILE}"
+     )
+   endif()
+ endforeach()
+ 
+-set(NCCL_DEVICE_HEADER "${PROJECT_BINARY_DIR}/include/rccl/nccl_device.h")
++set(NCCL_DEVICE_HEADER "${PROJECT_BINARY_DIR}/include/nccl_device.h")
+ # Copy hip_compat.h as-is (no hipification — contains both CUDA and HIP paths)
+ set(HIP_COMPAT_SRC "${RCCL_SOURCE_DIR}/src/include/nccl_device/hip_compat.h")
+ set(HIP_COMPAT_DST "${HIPIFY_DIR}/src/include/nccl_device/hip_compat.h")
+@@ -658,19 +721,21 @@ add_dependencies(copy_nccl_device_headers hipify_all)
+ # net_ib/ headers collide with other basenames (common.h, gin.h, p2p.h) and are hipified
+ # with _tmp suffixes. Create symlinks so that #include "common.h" etc. resolve correctly
+ # when compiling files in hipify/src/transport/net_ib/.
+-set(NET_IB_HIPIFY_DIR "${HIPIFY_DIR}/src/transport/net_ib")
+-set(NET_IB_HEADER_SYMLINKS "")
+-foreach(_hdr common gin p2p)
+-  add_custom_command(
+-    OUTPUT  "${NET_IB_HIPIFY_DIR}/${_hdr}.h"
+-    DEPENDS "${NET_IB_HIPIFY_DIR}/${_hdr}_tmp.h"
+-    COMMAND ${CMAKE_COMMAND} -E create_symlink
+-            "${_hdr}_tmp.h" "${NET_IB_HIPIFY_DIR}/${_hdr}.h"
+-    COMMENT "Symlinking net_ib/${_hdr}_tmp.h -> ${_hdr}.h"
+-  )
+-  list(APPEND NET_IB_HEADER_SYMLINKS "${NET_IB_HIPIFY_DIR}/${_hdr}.h")
+-endforeach()
+-add_custom_target(net_ib_header_symlinks DEPENDS ${NET_IB_HEADER_SYMLINKS})
++if(NOT NCCL_OS_WINDOWS)
++  set(NET_IB_HIPIFY_DIR "${HIPIFY_DIR}/src/transport/net_ib")
++  set(NET_IB_HEADER_SYMLINKS "")
++  foreach(_hdr common gin p2p)
++    add_custom_command(
++      OUTPUT  "${NET_IB_HIPIFY_DIR}/${_hdr}.h"
++      DEPENDS "${NET_IB_HIPIFY_DIR}/${_hdr}_tmp.h"
++      COMMAND ${CMAKE_COMMAND} -E copy_if_different
++              "${NET_IB_HIPIFY_DIR}/${_hdr}_tmp.h" "${NET_IB_HIPIFY_DIR}/${_hdr}.h"
++      COMMENT "Aliasing net_ib/${_hdr}_tmp.h -> ${_hdr}.h"
++    )
++    list(APPEND NET_IB_HEADER_SYMLINKS "${NET_IB_HIPIFY_DIR}/${_hdr}.h")
++  endforeach()
++  add_custom_target(net_ib_header_symlinks DEPENDS ${NET_IB_HEADER_SYMLINKS})
++endif()
+ 
+ # The top-level include/rma.h and include/rma/rma.h share the basename "rma.h",
+ # so add_file_unique() renames the second-listed one (include/rma/rma.h) to
+@@ -680,9 +745,9 @@ set(RMA_HIPIFY_DIR "${HIPIFY_DIR}/src/include/rma")
+ add_custom_command(
+   OUTPUT  "${RMA_HIPIFY_DIR}/rma.h"
+   DEPENDS "${RMA_HIPIFY_DIR}/rma_tmp.h"
+-  COMMAND ${CMAKE_COMMAND} -E create_symlink
+-          "rma_tmp.h" "${RMA_HIPIFY_DIR}/rma.h"
+-  COMMENT "Symlinking rma/rma_tmp.h -> rma/rma.h"
++  COMMAND ${CMAKE_COMMAND} -E copy_if_different
++          "${RMA_HIPIFY_DIR}/rma_tmp.h" "${RMA_HIPIFY_DIR}/rma.h"
++  COMMENT "Aliasing rma/rma_tmp.h -> rma/rma.h"
+ )
+ add_custom_target(rma_header_symlinks DEPENDS "${RMA_HIPIFY_DIR}/rma.h")
+ 
+@@ -691,7 +756,10 @@ add_custom_target(rma_header_symlinks DEPENDS "${RMA_HIPIFY_DIR}/rma.h")
+ # (test/host/run_host_tests.sh). The symlinks above are part of that tree: the
+ # hipified sources still #include the un-suffixed names, so staging without them
+ # yields a tree that cannot compile.
+-add_dependencies(hipify_all net_ib_header_symlinks rma_header_symlinks)
++add_dependencies(hipify_all rma_header_symlinks)
++if(NOT NCCL_OS_WINDOWS)
++  add_dependencies(hipify_all net_ib_header_symlinks)
++endif()
+ 
+ # nccl_device/{core,comm,gin}.h share basenames with the top-level src/include/
+ # {core,comm,gin}.h, so add_file_unique() renames the nccl_device copies to
+@@ -706,9 +774,9 @@ foreach(_hdr core comm gin)
+   add_custom_command(
+     OUTPUT  "${NCCL_DEVICE_HIPIFY_DIR}/${_hdr}.h"
+     DEPENDS "${NCCL_DEVICE_HIPIFY_DIR}/${_hdr}_tmp.h"
+-    COMMAND ${CMAKE_COMMAND} -E create_symlink
+-            "${_hdr}_tmp.h" "${NCCL_DEVICE_HIPIFY_DIR}/${_hdr}.h"
+-    COMMENT "Symlinking nccl_device/${_hdr}_tmp.h -> ${_hdr}.h"
++    COMMAND ${CMAKE_COMMAND} -E copy_if_different
++            "${NCCL_DEVICE_HIPIFY_DIR}/${_hdr}_tmp.h" "${NCCL_DEVICE_HIPIFY_DIR}/${_hdr}.h"
++    COMMENT "Aliasing nccl_device/${_hdr}_tmp.h -> ${_hdr}.h"
+   )
+   list(APPEND NCCL_DEVICE_HEADER_SYMLINKS "${NCCL_DEVICE_HIPIFY_DIR}/${_hdr}.h")
+ endforeach()
+@@ -846,9 +914,32 @@ list(APPEND HIP_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/git_version.cpp)
+ ## Set RCCL source files
+ add_library(rccl ${HIP_SOURCES})
+ 
++if(NCCL_OS_WINDOWS)
++  # Generate a PE export table from the public C ABI objects. RCCL's generated
++  # nccl.h declares APIs before core.h defines NCCL_API, so adding dllexport
++  # only at the definitions is rejected by Clang on Windows.
++  set_target_properties(rccl PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
++
++  # Keep POSIX compatibility shims isolated to native Windows builds. This
++  # directory intentionally contains only headers named by legacy RCCL code.
++  target_include_directories(rccl BEFORE PRIVATE
++    ${CMAKE_CURRENT_SOURCE_DIR}/include/os/windows_compat)
++  target_compile_definitions(rccl PRIVATE
++    NOMINMAX
++    WIN32_LEAN_AND_MEAN
++    _CRT_SECURE_NO_WARNINGS
++    _CRT_NONSTDC_NO_DEPRECATE
++    strcasecmp=_stricmp
++    strncasecmp=_strnicmp)
++  target_compile_options(rccl PRIVATE -Wno-microsoft-include)
++endif()
++
+ ## Set RCCL dependencies
+ ## Ensure git version is updated before building rccl
+-add_dependencies(rccl update_git_version copy_nccl_device_headers net_ib_header_symlinks rma_header_symlinks)
++add_dependencies(rccl update_git_version copy_nccl_device_headers rma_header_symlinks)
++if(NOT NCCL_OS_WINDOWS)
++  add_dependencies(rccl net_ib_header_symlinks)
++endif()
+ 
+ ## Set RCCL include directories
+ target_include_directories(rccl PRIVATE ${PROJECT_BINARY_DIR}/include)        # for generated rccl.h header
+@@ -866,7 +957,9 @@ target_include_directories(rccl PRIVATE ${DEVCOMM_INCLUDE_DIRS})
+ target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/src/transport)
+ target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/src/transport/net_ib)
+ target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/gensrc)
+-target_include_directories(rccl PRIVATE ${HSA_INCLUDE_PATH})
++if(HSA_INCLUDE_PATH)
++  target_include_directories(rccl PRIVATE ${HSA_INCLUDE_PATH})
++endif()
+ target_include_directories(rccl PRIVATE ${SMI_INCLUDE_DIR})
+ target_include_directories(rccl PRIVATE ${ROCMCORE_PATH}/include)
+ if(DEMANGLE_DIR)
+@@ -967,7 +1060,13 @@ if(${HIP_CONTIGUOUS_MEMORY})
+ else()
+   message(STATUS "HIP_CONTIGUOUS_MEMORY disabled")
+ endif()
+-if("${hip_version_string}" VERSION_GREATER_EQUAL "5.7.31920")
++if(WIN32)
++  # hipDeviceMallocUncached is not implemented by the native Windows HIP
++  # runtime.  Keeping HIP_UNCACHED_MEMORY defined also makes host-control
++  # allocations select hipHostMallocUncached, which is documented as
++  # Linux-only and returns hipErrorInvalidValue on Windows.
++  message(STATUS "HIP_UNCACHED_MEMORY disabled - unsupported on Windows")
++elseif("${hip_version_string}" VERSION_GREATER_EQUAL "5.7.31920")
+   target_compile_definitions(rccl PRIVATE HIP_UNCACHED_MEMORY)
+   message(STATUS "HIP_UNCACHED_MEMORY enabled")
+ else()
+@@ -980,11 +1079,11 @@ else()
+     message(STATUS "--hipcc-func-supp disabled")
+   endif()
+ endif()
+-if (HIP_HOST_UNCACHED_MEMORY)
++if (HIP_HOST_UNCACHED_MEMORY AND NOT WIN32)
+   target_compile_definitions(rccl PRIVATE HIP_HOST_UNCACHED_MEMORY)
+   message(STATUS "HIP_HOST_UNCACHED_MEMORY enabled")
+ else()
+-  message(STATUS "HIP_HOST_UNCACHED_MEMORY disabled")
++  message(STATUS "HIP_HOST_UNCACHED_MEMORY disabled or unsupported on Windows")
+ endif()
+ if(HIP_FABRIC_API_FUNC AND HIP_FABRIC_HANDLE_TYPE)
+   # HIP_FABRIC_API is used as both a cmake variable (ON/OFF, for status messages below)
+@@ -1230,14 +1329,18 @@ if(ENABLE_DEVICE_LINKER)
+ else()
+   target_link_libraries(rccl PRIVATE hip::device)
+ endif()
+-target_link_libraries(rccl PRIVATE   dl)
++if(NOT NCCL_OS_WINDOWS)
++  target_link_libraries(rccl PRIVATE dl)
++endif()
+ # Direct-link the HSA runtime. RCCL already depends on it transitively through the
+ # HIP runtime, so this is runtime-neutral. The linker records DT_NEEDED
+ # libhsa-runtime64.so.1 automatically (no SONAME string in source) and it resolves
+ # via librccl's existing RPATH, the same entry that already resolves libamdhip64.
+ # This replaces the previous dlopen("libhsa-runtime64.so") which broke on runtime
+ # trees (e.g. TheRock pip wheels) that ship no unversioned developer symlink.
+-target_link_libraries(rccl PRIVATE   hsa-runtime64::hsa-runtime64)
++if(NOT NCCL_OS_WINDOWS)
++  target_link_libraries(rccl PRIVATE hsa-runtime64::hsa-runtime64)
++endif()
+ target_link_libraries(rccl PRIVATE   ${SMI_LIBRARIES})
+ # librocm-core provides getROCmVersion() for reporting the runtime ROCm version.
+ if(ROCM_MAJOR_VERSION GREATER_EQUAL 6)
+@@ -1424,6 +1527,7 @@ endif()
+ 
+ # Build RCCL RAS client executable
+ #==================================================================================================
++if(NOT NCCL_OS_WINDOWS)
+ message("Building rccl RAS client executable")
+ 
+ add_executable(rcclras "${HIPIFY_DIR}/src/ras/client.cc")
+@@ -1433,7 +1537,9 @@ target_include_directories(rcclras PRIVATE ${HIPIFY_DIR}/src)
+ target_include_directories(rcclras PRIVATE ${HIPIFY_DIR}/src/include)
+ 
+ target_link_libraries(rcclras PRIVATE hip::host)
+-target_link_libraries(rcclras PRIVATE dl)
++if(NOT NCCL_OS_WINDOWS)
++  target_link_libraries(rcclras PRIVATE dl)
++endif()
+ 
+ if(BUILD_SHARED_LIBS)
+   target_link_libraries(rcclras PRIVATE rccl hip::device)
+@@ -1441,6 +1547,7 @@ else()
+   add_dependencies(rcclras rccl)
+   target_link_libraries(rcclras PRIVATE dl rt -lrccl -L${CMAKE_CURRENT_BINARY_DIR} -lamdhip64 -L${ROCM_PATH}/lib)
+ endif()
++endif()
+ 
+ # Export HIPIFY_DIR to parent scope for use in install rules
+ set(HIPIFY_DIR ${HIPIFY_DIR} PARENT_SCOPE)
+diff --git a/projects/rccl/src/debug.cc b/projects/rccl/src/debug.cc
+index 2911e08bd289f083f96275019b1c958b35c68c9e..7c5a775a9485fafd5c97cc7471d1f69b0a5b6320 100644
+--- a/projects/rccl/src/debug.cc
++++ b/projects/rccl/src/debug.cc
+@@ -363,7 +363,10 @@ static void ncclDebugInit() {
+ #if defined(NCCL_OS_LINUX)
+         setlinebuf(file); // disable block buffering
+ #elif defined(NCCL_OS_WINDOWS)
+-        setvbuf(file, NULL, _IOLBF, 0); // disable block buffering
++        // UCRT rejects a zero-sized buffer for _IOLBF and terminates the
++        // process through its invalid-parameter handler.  Use unbuffered I/O
++        // so debug output is still emitted immediately on Windows.
++        setvbuf(file, NULL, _IONBF, 0);
+ #endif
+         ncclDebugFile = file;
+       }
+diff --git a/projects/rccl/src/device/common.cu b/projects/rccl/src/device/common.cu
+index 37091a2ceb1f30195f4fc1e29281180f81636dda..1764c7f9fa0e96b5faafa062b4c7fd224c059042 100644
+--- a/projects/rccl/src/device/common.cu
++++ b/projects/rccl/src/device/common.cu
+@@ -11,7 +11,7 @@
+ #ifndef RCCL_DEVICE_LINKER
+ __shared__ ncclShmemData ncclShmem;
+ #if __CUDA_ARCH__ < 700
+-__shared__ ulong2 ncclShmemPerWarp[ncclShmemScratchWarpSize() * (NCCL_MAX_NTHREADS / WARP_SIZE) / sizeof(ulong2)];
++__shared__ ulonglong2 ncclShmemPerWarp[ncclShmemScratchWarpSize() * (NCCL_MAX_NTHREADS / WARP_SIZE) / sizeof(ulonglong2)];
+ #endif
+ #endif
+ 
+diff --git a/projects/rccl/src/device/common.h b/projects/rccl/src/device/common.h
+index a9e3fb3bd41519de5f8e025c16b47cd4ce7fe2ba..bf8f7db1586659c859296c2d53e79eaa7f6fef38 100644
+--- a/projects/rccl/src/device/common.h
++++ b/projects/rccl/src/device/common.h
+@@ -99,14 +99,14 @@ struct ncclShmemData {
+ 
+ #ifdef RCCL_DEVICE_LINKER
+ __shared__ ncclShmemData ncclShmem;
+-__shared__ ulong2 ncclShmemPerWarp[ncclShmemScratchWarpSize() * (NCCL_MAX_NTHREADS / WARP_SIZE) / sizeof(ulong2)];
++__shared__ ulonglong2 ncclShmemPerWarp[ncclShmemScratchWarpSize() * (NCCL_MAX_NTHREADS / WARP_SIZE) / sizeof(ulonglong2)];
+ #else
+ extern __shared__ ncclShmemData ncclShmem;
+ #if __CUDA_ARCH__ >= 700
+-extern __shared__ ulong2 ncclShmemPerWarp[/*ncclShmemDynamicSize()/sizeof(ulong2)*/];
++extern __shared__ ulonglong2 ncclShmemPerWarp[/*ncclShmemDynamicSize()/sizeof(ulonglong2)*/];
+ #else
+-extern __shared__ ulong2
+-  ncclShmemPerWarp[ncclShmemScratchWarpSize() * (NCCL_MAX_NTHREADS / WARP_SIZE) / sizeof(ulong2)];
++extern __shared__ ulonglong2
++  ncclShmemPerWarp[ncclShmemScratchWarpSize() * (NCCL_MAX_NTHREADS / WARP_SIZE) / sizeof(ulonglong2)];
+ #endif
+ #endif
+ 
+@@ -184,11 +184,19 @@ __device__ inline bool barrier_red_or(bool vote, int name, int nThreads) {
+ inline __device__ void copyToShmem16(int tid, void* dst, void const* src, int bytes) {
+   int offset = 16 * tid;
+   if (offset < bytes) {
+-    ulong2 *src2, *dst2;
+-    src2 = (ulong2*)((char const*)src + offset);
+-    dst2 = (ulong2*)((char*)dst + offset);
+-    dst2->x = src2->x;
+-    dst2->y = src2->y;
++    // `ulong2` is only 8 bytes in HIP on Windows because its two `unsigned
++    // long` lanes are 32 bits under the LLP64 ABI. Copying
++    // x/y therefore moved just the first 8 bytes of every 16-byte block and
++    // left communicator/channel fields such as ring.prev/ring.next
++    // uninitialized in LDS.  Four uint32 lanes are exactly 16 bytes on every
++    // supported host ABI.
++    static_assert(sizeof(uint4) == 16, "uint4 must be a 16-byte copy word");
++    uint4 const* src4 = (uint4 const*)((char const*)src + offset);
++    uint4* dst4 = (uint4*)((char*)dst + offset);
++    dst4->x = src4->x;
++    dst4->y = src4->y;
++    dst4->z = src4->z;
++    dst4->w = src4->w;
+   }
+ }
+ 
+diff --git a/projects/rccl/src/device/op128.h b/projects/rccl/src/device/op128.h
+index 569567831aa28acc5d48a0816b092e81288dd200..dad73f57d893859f2670f7a352323d154b246fa7 100644
+--- a/projects/rccl/src/device/op128.h
++++ b/projects/rccl/src/device/op128.h
+@@ -169,7 +169,7 @@ union alignas(16) BytePack<16> {
+   uint16_t u16[8];
+   uint32_t u32[4];
+   uint64_t u64[2];
+-  ulong2 ul2[1], native;
++  ulonglong2 ul2[1], native;
+   v4u v4u;
+   inline __device__ BytePack<16>() = default;
+   inline __device__ BytePack<16>(const BytePack<16>& other) {
+@@ -181,6 +181,7 @@ union alignas(16) BytePack<16> {
+     return *this;
+   }
+ };
++static_assert(sizeof(BytePack<16>) == 16, "BytePack<16> must remain a 128-bit value");
+ template <int Size>
+ union BytePack {
+   BytePack<Size / 2> half[2];
+diff --git a/projects/rccl/src/device/prims_simple.h b/projects/rccl/src/device/prims_simple.h
+index bfbe4a452adfd39d927f1bc5bc991682ef214842..9b006cfb1f54b98b9099e0949baa929a35b5efde 100644
+--- a/projects/rccl/src/device/prims_simple.h
++++ b/projects/rccl/src/device/prims_simple.h
+@@ -736,7 +736,7 @@ public:
+     if (tid < 5) flags |= roles[tid];
+ 
+     int nranks = ncclShmem.comm.nRanks;
+-    if (tid < 32 && ((1UL << tid) < nranks)) {
++    if (tid < 32 && ((1ULL << tid) < nranks)) {
+       int rank = ncclShmem.comm.rank;
+       uint32_t delta = 1 << tid;
+       // Load recv peer
+diff --git a/projects/rccl/src/device/symmetric/primitives.cuh b/projects/rccl/src/device/symmetric/primitives.cuh
+index 1e73a9c5a512734708860b5cbc0660fe57f48844..e1df52a945aa266636a9a27cf94ec747961c5dfa 100644
+--- a/projects/rccl/src/device/symmetric/primitives.cuh
++++ b/projects/rccl/src/device/symmetric/primitives.cuh
+@@ -462,16 +462,16 @@ static __device__ void bcastMultimem(ncclSymkArgsHandler& handler, int tn, int t
+   }
+ }
+ 
+-extern __shared__ ulong2 ncclSymkSmem[];
++extern __shared__ ulonglong2 ncclSymkSmem[];
+ 
+ static __device__ void ncclSymkSmemPartition_help(int bumper) {}
+ template <typename T, typename... More>
+ static __device__ void ncclSymkSmemPartition_help(int bumper, T** ptr, int size, More... more) {
+   T* ans = reinterpret_cast<T*>(ncclSymkSmem + bumper);
+   __builtin_assume(__isShared(ans)); // Let compiler know this is shared memory (reinterpret_cast obscured as much).
+-  __builtin_assume_aligned(ans, sizeof(ulong2));
++  __builtin_assume_aligned(ans, sizeof(ulonglong2));
+   *ptr = ans;
+-  bumper += (size * sizeof(T) + sizeof(ulong2) - 1) / sizeof(ulong2);
++  bumper += (size * sizeof(T) + sizeof(ulonglong2) - 1) / sizeof(ulonglong2);
+   ncclSymkSmemPartition_help(bumper, more...);
+ }
+ 
+diff --git a/projects/rccl/src/enqueue.cc b/projects/rccl/src/enqueue.cc
+index c220b6d16d95f35bfa76805c10ca3bc43508a036..a2a13c464fc4d3b22b48327082fdae2aae9fc447 100644
+--- a/projects/rccl/src/enqueue.cc
++++ b/projects/rccl/src/enqueue.cc
+@@ -70,9 +70,10 @@ constexpr int rcclShmemScratchWarpSize(int cudaArch = NCCL_CUDA_ARCH, int WarpSi
+ 
+ /* Copy of ncclShmemDynamicSize */
+ constexpr int rcclShmemDynamicSize(int cudaArch = NCCL_CUDA_ARCH, int WarpSize = 32) {
+-#ifdef RCCL_DEVICE_LINKER
+-  // In device-linker builds the scratch/ncclShmem are static __shared__ (see device/common.h);
+-  // requesting it as dynamic shmem too would double-count and overflow the per-block LDS budget.
++#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__) || defined(RCCL_DEVICE_LINKER)
++  // HIP kernels (and device-linker builds) keep scratch/ncclShmem in static
++  // __shared__ storage (see device/common.h). Requesting it again as dynamic
++  // shared memory double-counts the LDS allocation at launch.
+   (void)cudaArch;
+   (void)WarpSize;
+   return 0;
+@@ -1995,7 +1996,7 @@ enum ncclImplicitOrder {
+ 
+ static ncclResult_t getImplicitOrder(enum ncclImplicitOrder* mode, bool capturing, int driver = -1) {
+   if (ncclParamLaunchOrderImplicit()) {
+-#if !defined(__HIP_PLATFORM_AMD__) || !defined(__HIPCC__)
++#if !defined(__HIP_PLATFORM_AMD__) && !defined(__HIPCC__)
+     if (driver < 0) {
+       NCCLCHECK(ncclCudaDriverVersion(&driver));
+     }
+@@ -2262,7 +2263,7 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
+     return ncclSuccess;
+   }
+ 
+-#if !defined(__HIP_PLATFORM_AMD__) || !defined(__HIPCC__)
++#if !defined(__HIP_PLATFORM_AMD__) && !defined(__HIPCC__)
+   if (CUDART_VERSION >= 11080 && driverVersion >= 11080) {
+ #if CUDART_VERSION >= 11080
+     int compCap = comm->compCap;
+@@ -3380,14 +3381,14 @@ static ncclResult_t p2pTaskAppend(struct ncclComm* comm, struct ncclInfo* info,
+             comm->channels[channelId].peers[peer]->send[1].hasSeen = 1;
+             comm->channels[channelId].peers[peer]->send[1].p2pOnly = 1;
+             // comm->connectSend[peer] |= (1UL<<channelId);
+-            comm->connectSend[peer].masks[channelId / 64] |= (1UL << (channelId % 64));
++            comm->connectSend[peer].masks[channelId / 64] |= (1ULL << (channelId % 64));
+             ncclGroupCommPreconnect(comm);
+           }
+           if (comm->p2pNet && comm->channels[channelId].peers[peer]->send[NCCL_CONN_IDX_P2P_NET].hasSeen == 0) {
+             comm->channels[channelId].peers[peer]->send[1].hasSeen = 1;
+             // comm->connectSend[peer+comm->nRanks*NCCL_CONN_IDX_P2P_NET] |= (1UL<<channelId);
+             comm->connectSend[peer + comm->nRanks * NCCL_CONN_IDX_P2P_NET].masks[channelId / 64] |=
+-              (1UL << (channelId % 64));
++              (1ULL << (channelId % 64));
+             ncclGroupCommPreconnect(comm);
+           }
+         } else {
+@@ -3396,14 +3397,14 @@ static ncclResult_t p2pTaskAppend(struct ncclComm* comm, struct ncclInfo* info,
+             comm->channels[channelId].peers[peer]->recv[1].hasSeen = 1;
+             comm->channels[channelId].peers[peer]->recv[1].p2pOnly = 1;
+             // comm->connectRecv[peer] |= (1UL<<channelId);
+-            comm->connectRecv[peer].masks[channelId / 64] |= (1UL << (channelId % 64));
++            comm->connectRecv[peer].masks[channelId / 64] |= (1ULL << (channelId % 64));
+             ncclGroupCommPreconnect(comm);
+           }
+           if (comm->p2pNet && comm->channels[channelId].peers[peer]->recv[NCCL_CONN_IDX_P2P_NET].hasSeen == 0) {
+             comm->channels[channelId].peers[peer]->recv[1].hasSeen = 1;
+             // comm->connectRecv[peer+comm->nRanks*NCCL_CONN_IDX_P2P_NET] |= (1UL<<channelId);
+             comm->connectRecv[peer + comm->nRanks * NCCL_CONN_IDX_P2P_NET].masks[channelId / 64] |=
+-              (1UL << (channelId % 64));
++              (1ULL << (channelId % 64));
+             ncclGroupCommPreconnect(comm);
+           }
+         }
+diff --git a/projects/rccl/src/graph/connect.cc b/projects/rccl/src/graph/connect.cc
+index 0196e5f0188e5f1ac14e537ab8dd9b0d0e3cb7bf..f6a8e75150179be451c298043544359b5d5a7f5e 100644
+--- a/projects/rccl/src/graph/connect.cc
++++ b/projects/rccl/src/graph/connect.cc
+@@ -450,7 +450,8 @@ static ncclResult_t printRecvSendLocalRanks(const struct ncclComm* comm, const i
+   int numChannels = (nChannels > MAXCHANNELS / 2) ? 2 * nChannels : nChannels;
+ 
+   for (int c = 0; c < numChannels; c++) {
+-    sprintf(buff + offset, "     %02d%n", c, &inc);
++    inc = snprintf(buff + offset, sizeof(buff) - offset, "     %02d", c);
++    if (inc < 0 || (size_t)inc >= sizeof(buff) - offset) return ncclInternalError;
+     offset += inc;
+   }
+   INFO(NCCL_GRAPH, "[RINGS] %s", buff);
+@@ -460,7 +461,8 @@ static ncclResult_t printRecvSendLocalRanks(const struct ncclComm* comm, const i
+     for (int c = 0; c < nChannels; c++) {
+       int recvRank = comm->rankToLocalRank[ringRecv[c * comm->nNodes + n]];
+       int sendRank = comm->rankToLocalRank[ringSend[c * comm->nNodes + n]];
+-      sprintf(buff + offset, " %02d->%02d%n", recvRank, sendRank, &inc);
++      inc = snprintf(buff + offset, sizeof(buff) - offset, " %02d->%02d", recvRank, sendRank);
++      if (inc < 0 || (size_t)inc >= sizeof(buff) - offset) return ncclInternalError;
+       offset += inc;
+     }
+     INFO(NCCL_GRAPH, "[RINGS] %s", buff);
+diff --git a/projects/rccl/src/graph/paths.cc b/projects/rccl/src/graph/paths.cc
+index f6264bc224c66c40d4a11cfc07b594f055d59b7c..fa744a0ea99974d9d5a072509ef0e004972f4270 100644
+--- a/projects/rccl/src/graph/paths.cc
++++ b/projects/rccl/src/graph/paths.cc
+@@ -935,8 +935,10 @@ ncclResult_t ncclTopoComputePaths(struct ncclTopoSystem* system, struct ncclComm
+   // Special handling of gfx94x and gfx950
+ 
+ #if !defined(TOPO_EXPL)
+-  char strValue[1024];
++  char strValue[1024] = {};
++#if !defined(NCCL_OS_WINDOWS)
+   NCCLCHECK(ncclOsTopoGetStrFromSys("/sys/devices/virtual/dmi/id", "bios_version", strValue, sizeof(strValue)));
++#endif
+   if (strncmp("Hyper-V UEFI Release", strValue, 20) == 0) {
+ #endif
+     int arch, vendor, model;
+diff --git a/projects/rccl/src/graph/search.cc b/projects/rccl/src/graph/search.cc
+index caa5a76957f0206c4e04e4f75fa7f171dfda1b20..f04d9e110b1b2fadc205d0b32393516c5ec22acf 100644
+--- a/projects/rccl/src/graph/search.cc
++++ b/projects/rccl/src/graph/search.cc
+@@ -937,9 +937,10 @@ ncclResult_t ncclTopoSearchRec(struct ncclTopoSystem* system, struct ncclTopoGra
+ /* User defined graph from XML file */
+ /************************************/
+ 
+-struct kvDict kvDictLinkType[] = {{"LOC", PATH_LOC}, {"NVL", PATH_NVL}, {"NVB", PATH_NVB}, {"PIX", PATH_PIX},
+-                                  {"PXB", PATH_PXB}, {"P2C", PATH_P2C}, {"PXN", PATH_PXN}, {"PHB", PATH_PHB},
+-                                  {"SYS", PATH_SYS}, {NULL, 0}};
++struct kvDict kvDictLinkType[] = {{"LOC", PATH_LOC}, {"NVL", PATH_NVL}, {"XGMI", PATH_NVL}, {"NVB", PATH_NVB},
++                                  {"C2C", PATH_C2C}, {"PIX", PATH_PIX}, {"PXB", PATH_PXB}, {"P2C", PATH_P2C},
++                                  {"PXN", PATH_PXN}, {"PHB", PATH_PHB}, {"SYS", PATH_SYS}, {"NET", PATH_NET},
++                                  {"DIS", PATH_DIS}, {NULL, 0}};
+ 
+ ncclResult_t ncclTopoGetChannelFromXml(struct ncclXmlNode* xmlChannel, int c, struct ncclTopoSystem* system,
+                                        struct ncclTopoGraph* graph) {
+@@ -996,9 +997,9 @@ ncclResult_t ncclTopoGetGraphFromXmlSub(struct ncclXmlNode* xmlGraph, struct ncc
+   NCCLCHECK(xmlGetAttr(xmlGraph, "latencyinter", &str));
+   if (!str) INFO(NCCL_GRAPH, "latencyinter not found in graph, using 0.0");
+   graph->latencyInter = str ? strtof(str, NULL) : 0.0;
+-  NCCLCHECK(xmlGetAttr(xmlGraph, "typeintra", &str));
++  NCCLCHECK(xmlGetAttrStr(xmlGraph, "typeintra", &str));
+   NCCLCHECK(kvConvertToInt(str, &graph->typeIntra, kvDictLinkType));
+-  NCCLCHECK(xmlGetAttr(xmlGraph, "typeinter", &str));
++  NCCLCHECK(xmlGetAttrStr(xmlGraph, "typeinter", &str));
+   NCCLCHECK(kvConvertToInt(str, &graph->typeInter, kvDictLinkType));
+   NCCLCHECK(xmlGetAttrInt(xmlGraph, "samechannels", &graph->sameChannels));
+   for (int s = 0; s < xmlGraph->nSubs; s++) {
+diff --git a/projects/rccl/src/graph/xml.h b/projects/rccl/src/graph/xml.h
+index ff92e51008ae876717c78ae0797089eefdc5feca..c77b50f359b219fb1048b16a05731add6b646a31 100644
+--- a/projects/rccl/src/graph/xml.h
++++ b/projects/rccl/src/graph/xml.h
+@@ -437,6 +437,18 @@ struct kvDict {
+ };
+ 
+ static ncclResult_t kvConvertToInt(const char* str, int* value, struct kvDict* dict) {
++  if (str == NULL) {
++    WARN("KV Convert to int : null input string");
++    return ncclInvalidArgument;
++  }
++  if (value == NULL) {
++    WARN("KV Convert to int : null result pointer");
++    return ncclInvalidArgument;
++  }
++  if (dict == NULL) {
++    WARN("KV Convert to int : null dictionary");
++    return ncclInternalError;
++  }
+   struct kvDict* d = dict;
+   while (d->str) {
+     if (strncmp(str, d->str, strlen(d->str)) == 0) {
+diff --git a/projects/rccl/src/include/alloc.h b/projects/rccl/src/include/alloc.h
+index f76b0da12d550c009ec0c19a112068d68b325dfa..cc17e458a506114275d309a41dbbe49cc5b98571 100644
+--- a/projects/rccl/src/include/alloc.h
++++ b/projects/rccl/src/include/alloc.h
+@@ -14,7 +14,9 @@
+ #include "utils.h"
+ #include "p2p.h"
+ #include "mem_manager.h"
++#if defined(NCCL_OS_LINUX)
+ #include <sys/mman.h>
++#endif
+ struct ncclComm;
+ #include "os.h"
+ #include <memory>
+diff --git a/projects/rccl/src/include/alt_rsmi.h b/projects/rccl/src/include/alt_rsmi.h
+index f6b61d2dea29fd0fb7c16e11047dced9b1d8f26b..284892214a70bb2f9ff771b102e67cacac353bb2 100644
+--- a/projects/rccl/src/include/alt_rsmi.h
++++ b/projects/rccl/src/include/alt_rsmi.h
+@@ -13,20 +13,7 @@
+ ** the bits actually required by RCCL.
+ */
+ 
+-#include <stdio.h>
+-#include <dirent.h>
+-#include <sys/types.h>
+-#include <sys/stat.h>
+-#include <unistd.h>
+-
+-#include <iostream>
+-#include <fstream>
+-#include <sstream>
+-#include <cstring>
+-#include <map>
+-#include <cassert>
+-#include <algorithm>
+-#include <iomanip>
++#include <stdint.h>
+ 
+ /**
+  ** This is an exact copy of the IO Link types from rocm_smi.h
+diff --git a/projects/rccl/src/include/bitops.h b/projects/rccl/src/include/bitops.h
+index 77e5915ae38558b261c68c0279b2aaddd7b2404b..6c71bd43aace92044aab96c40d3ddcbf7fd991f2 100644
+--- a/projects/rccl/src/include/bitops.h
++++ b/projects/rccl/src/include/bitops.h
+@@ -47,8 +47,8 @@ constexpr static __host__ __device__ Int maxval(Int a, Int b, More... more) {
+ #endif
+ }
+ 
+-#define BIT(x) (1UL << (x))
+-#define MASK(x) ((1UL << x) - 1UL)
++#define BIT(x) (1ULL << (x))
++#define MASK(x) ((1ULL << x) - 1ULL)
+ 
+ #define DIVUP(x, y) (((x) + (y) - 1) / (y))
+ 
+diff --git a/projects/rccl/src/include/core.h b/projects/rccl/src/include/core.h
+index 6fc6966c522835856abebb937bfc4ac0792a6ae1..2739b5c195f2e1b685124bc96180eff1ba551cc7 100644
+--- a/projects/rccl/src/include/core.h
++++ b/projects/rccl/src/include/core.h
+@@ -24,7 +24,6 @@
+ #define NCCL_API(ret, func, args...) extern "C" __attribute__((visibility("default"))) ret func(args)
+ #endif // end PROFAPI
+ #else
+-/* Windows and other non-Linux: use standard variadic macro (no visibility attribute) */
+ #define NCCL_API(ret, func, ...) extern "C" ret func(__VA_ARGS__)
+ #endif // end NCCL_OS_LINUX
+ 
+diff --git a/projects/rccl/src/include/cpuset.h b/projects/rccl/src/include/cpuset.h
+index f7390d6ebff4b51ea2a09cf47b9e28f012bc59de..3b89088bbe2d0729700cbccbd1eee0442f541e5e 100644
+--- a/projects/rccl/src/include/cpuset.h
++++ b/projects/rccl/src/include/cpuset.h
+@@ -42,7 +42,7 @@ static ncclResult_t ncclStrToCpuset(const char* maskStr, ncclAffinity* set) {
+   for (int a = 0; (a + m) < CPU_SET_N_U32; a++) {
+     // each mask is U32_LEN CPUs, list them all if the bit is on
+     for (int i = 0; i < U32_LEN; ++i) {
+-      if (cpumasks[a + m] & (1UL << i)) ncclOsCpuSet(*set, i + a * U32_LEN);
++      if (cpumasks[a + m] & (1ULL << i)) ncclOsCpuSet(*set, i + a * U32_LEN);
+     }
+   }
+   return ncclSuccess;
+diff --git a/projects/rccl/src/include/debug.h b/projects/rccl/src/include/debug.h
+index cc1eb2f3ba7f7ea1d7c465e3c0d54d43f362a9b8..d91117708aaeafac57451f0880810b29407d28b1 100644
+--- a/projects/rccl/src/include/debug.h
++++ b/projects/rccl/src/include/debug.h
+@@ -11,6 +11,7 @@
+ #include "nccl.h"
+ #include "nccl_common.h"
+ #include <stdio.h>
++#include <pthread.h>
+ #include <thread>
+ #include "compiler.h"
+ 
+diff --git a/projects/rccl/src/include/device.h b/projects/rccl/src/include/device.h
+index a2aa0083709905ade2bf6aaa523a4088a51a7169..cd8cd821cf0097260076cfa45f18a8553807b41f 100644
+--- a/projects/rccl/src/include/device.h
++++ b/projects/rccl/src/include/device.h
+@@ -671,14 +671,20 @@ struct alignas(16) ncclDevKernelArgs {
+ 
+ template <size_t capacity>
+ struct alignas(16) ncclDevKernelArgsStorage {
++  static_assert(sizeof(ulonglong2) == 16 && alignof(ulonglong2) == 16,
++                "ulonglong2 must provide a portable 16-byte storage cell");
++  static_assert(capacity % sizeof(ulonglong2) == 0,
++                "kernel argument capacity must be a whole number of storage cells");
+   union {
+     struct ncclDevKernelArgs args;
+-    ulong2 storage[capacity / sizeof(ulong2)];
++    ulonglong2 storage[capacity / sizeof(ulonglong2)];
+   };
+ };
+ 
+ typedef ncclDevKernelArgsStorage<(5 << 10)> ncclDevKernelArgs5K;
+ typedef ncclDevKernelArgsStorage<(4 << 10)> ncclDevKernelArgs4K;
++static_assert(sizeof(ncclDevKernelArgs5K) == (5 << 10), "5 KiB kernel argument ABI changed");
++static_assert(sizeof(ncclDevKernelArgs4K) == (4 << 10), "4 KiB kernel argument ABI changed");
+ // typedef ncclDevKernelArgsStorage<(32<<10)-4> ncclDevKernelArgs31K;
+ 
+ #ifdef ENABLE_WARP_SPEED
+diff --git a/projects/rccl/src/include/gdrwrap.h b/projects/rccl/src/include/gdrwrap.h
+index 2db5241434aa504a13f782303156cca8cf5fe601..65bf7c2d7268aac47b406826a90c09b059fba666 100644
+--- a/projects/rccl/src/include/gdrwrap.h
++++ b/projects/rccl/src/include/gdrwrap.h
+@@ -125,7 +125,7 @@ typedef enum gdr_pin_flags {
+ } gdr_pin_flags_t;
+ 
+ #define GPU_PAGE_SHIFT   16
+-#define GPU_PAGE_SIZE    (1UL << GPU_PAGE_SHIFT)
++#define GPU_PAGE_SIZE    (1ULL << GPU_PAGE_SHIFT)
+ #define GPU_PAGE_OFFSET  (GPU_PAGE_SIZE-1)
+ #define GPU_PAGE_MASK    (~GPU_PAGE_OFFSET)
+ 
+diff --git a/projects/rccl/src/include/gin/gin_host_win_stub.h b/projects/rccl/src/include/gin/gin_host_win_stub.h
+index 229141439461843b996f75b5758648cc7628b6aa..062865d53ec7a6b1322790c4ca09ca90e2e69abd 100644
+--- a/projects/rccl/src/include/gin/gin_host_win_stub.h
++++ b/projects/rccl/src/include/gin/gin_host_win_stub.h
+@@ -16,6 +16,7 @@
+ #include "allocator.h"
+ #include "nccl.h"
+ #include "nccl_common.h"
++#include "nccl_device/core.h"
+ #include "plugin/nccl_net.h"
+ #include "os.h"
+ #include <thread>
+diff --git a/projects/rccl/src/include/nccl_device/coop.h b/projects/rccl/src/include/nccl_device/coop.h
+index b0beec17f541362cc8ed3b06ce5342b0b998b03a..5de88cea5c7ed2aa158e27be527c7b40b2169d99 100644
+--- a/projects/rccl/src/include/nccl_device/coop.h
++++ b/projects/rccl/src/include/nccl_device/coop.h
+@@ -391,8 +391,8 @@ NCCL_DEVICE_INLINE T ncclCoopBcast(ncclCoopLanes coop, T value, int root, bool e
+   return v;
+ }
+ 
+-NCCL_DEVICE_INLINE ulong2* ncclCoopBcast_WarpSpan_stash() {
+-  __shared__ ulong2 stash[15];
++NCCL_DEVICE_INLINE ulonglong2* ncclCoopBcast_WarpSpan_stash() {
++  __shared__ ulonglong2 stash[15];
+   return stash;
+ }
+ 
+@@ -405,8 +405,8 @@ NCCL_DEVICE_INLINE T ncclCoopBcast(ncclCoopWarpSpan coop, T value, int root, boo
+   return *(T*)&ncclCoopBcast_WarpSpan_stash()[coop.id];
+ }
+ 
+-NCCL_DEVICE_INLINE ulong2* ncclCoopBcast_Cta_stash() {
+-  __shared__ ulong2 stash;
++NCCL_DEVICE_INLINE ulonglong2* ncclCoopBcast_Cta_stash() {
++  __shared__ ulonglong2 stash;
+   return &stash;
+ }
+ 
+diff --git a/projects/rccl/src/include/nccl_device/gin/gpi/gin_gpi.h b/projects/rccl/src/include/nccl_device/gin/gpi/gin_gpi.h
+index c004b4cb7bbec5a4987d691c1ca04b1f8ac495f5..f118a05a69eff394dafb81642677f9e05057f113 100644
+--- a/projects/rccl/src/include/nccl_device/gin/gpi/gin_gpi.h
++++ b/projects/rccl/src/include/nccl_device/gin/gpi/gin_gpi.h
+@@ -96,7 +96,7 @@ __device__ static inline uint64_t gpi_gpu_channel_get_pi(gpi_gpu_channel_t* ch,
+   if (optFlags & ncclGinOptFlagsMaySkipCreditCheck) {
+     return pi;
+   }
+-  const size_t size = 1UL << loadConst(&ch->queue_.log_depth);
++  const size_t size = 1ULL << loadConst(&ch->queue_.log_depth);
+   uint64_t ci_shadow = gpi_gpu_channel_read_ci_shadow<resource_sharing_mode>(ch);
+ 
+   if ((pi + slots) - ci_shadow > size) {
+@@ -111,7 +111,7 @@ __device__ static inline uint64_t gpi_gpu_channel_get_pi(gpi_gpu_channel_t* ch,
+ }
+ __device__ static inline uint64_t gpi_gpu_channel_get_idx(gpi_gpu_channel_t* ch, uint64_t pi) {
+   using nccl::utility::loadConst;
+-  const size_t size = 1UL << loadConst(&ch->queue_.log_depth);
++  const size_t size = 1ULL << loadConst(&ch->queue_.log_depth);
+   return pi & (size - 1);
+ }
+ __device__ static inline void gpi_gpu_channel_set_gfd_flag(gpi_gpu_channel_t* ch, gpi_gfd_t* gfd, uint64_t pi) {
+diff --git a/projects/rccl/src/include/nccl_device/gin/gpi/gin_gpi_device_host_common.h b/projects/rccl/src/include/nccl_device/gin/gpi/gin_gpi_device_host_common.h
+index 4a2cf81256f3cb9c9befd2487a7a584b6a359b9c..88357d5072f552828b578940ef8a3060fb053846 100644
+--- a/projects/rccl/src/include/nccl_device/gin/gpi/gin_gpi_device_host_common.h
++++ b/projects/rccl/src/include/nccl_device/gin/gpi/gin_gpi_device_host_common.h
+@@ -18,7 +18,7 @@ typedef struct {
+ } __attribute__((aligned(64))) gpi_ci_t;
+ 
+ /* Flag to indicate if a counted operation has been issued to the signal. */
+-#define GPI_SIGNAL_COUNTED_FLAG (1UL << 0)
++#define GPI_SIGNAL_COUNTED_FLAG (1ULL << 0)
+ 
+ typedef struct {
+   uint64_t value;
+@@ -31,12 +31,12 @@ typedef struct {
+ /* User can set this flag in the counter to indicate if a writeback has occurred or not.
+  * When cleared, the writeback has happened.
+  */
+-#define GPI_COUNTER_FLAG_WRITEBACK_PENDING (1UL << 63)
++#define GPI_COUNTER_FLAG_WRITEBACK_PENDING (1ULL << 63)
+ 
+ /* When set, a GFD operation associated with a counter has experienced an error. This flag
+  * is cleared by resetting the counter.
+  */
+-#define GPI_COUNTER_FLAG_ERROR (1UL << 62)
++#define GPI_COUNTER_FLAG_ERROR (1ULL << 62)
+ 
+ typedef struct {
+   uint64_t value;
+diff --git a/projects/rccl/src/include/nvtx.h b/projects/rccl/src/include/nvtx.h
+index 16e815ff207d8a25863f90b30348674756416578..c1aed4bea71eb929bb6bc2b3dcc163b0587c55f7 100644
+--- a/projects/rccl/src/include/nvtx.h
++++ b/projects/rccl/src/include/nvtx.h
+@@ -8,6 +8,13 @@
+ #ifndef NCCL_NVTX_H_
+ #define NCCL_NVTX_H_
+ 
++// Modified in 2026 by Windows AMD vLLM Multi-GPU contributors to provide a
++// native-Windows no-implementation fallback.
++#ifdef NVTX_NO_IMPL
++#include "nvtx_stub.h"
++extern void initNvtxRegisteredEnums();
++#else
++
+ #include "nvtx3/nvtx3.hpp"
+ #include "roctx.h"
+ 
+@@ -243,4 +250,5 @@ private:
+ 
+ extern void initNvtxRegisteredEnums();
+ 
++#endif // NVTX_NO_IMPL
+ #endif
+diff --git a/projects/rccl/src/include/nvtx_stub.h b/projects/rccl/src/include/nvtx_stub.h
+index d3933719af169263efc1f6a569f9741c5ef05df2..e34d1a4a3fa65bdec411f858035b3bd6699adc38 100644
+--- a/projects/rccl/src/include/nvtx_stub.h
++++ b/projects/rccl/src/include/nvtx_stub.h
+@@ -13,7 +13,10 @@ struct nccl_domain {
+   static constexpr char const* name{"NCCL"};
+ };
+ 
++// Modified in 2026 by Windows AMD vLLM Multi-GPU contributors to cover the
++// RCCL range macro used by native-Windows builds.
+ #define NVTX3_FUNC_RANGE_IN(domain)
++#define NCCL_NVTX3_FUNC_RANGE
+ #define nvtxNameOsThreadA(syscall, thread)
+ #define NVTX3_FUNC_WITH_PARAMS(N, T, P)
+ #define NVTX3_PAYLOAD(...) __VA_ARGS__
+diff --git a/projects/rccl/src/include/os/windows.h b/projects/rccl/src/include/os/windows.h
+index 23ceb9e86e8f1264748e7bf2fe401007d768510a..5865e4ff847955b5b818eb1e6aaade969847b499 100644
+--- a/projects/rccl/src/include/os/windows.h
++++ b/projects/rccl/src/include/os/windows.h
+@@ -55,6 +55,11 @@ typedef DWORD_PTR ncclAffinity;
+ 
+ typedef unsigned long ncclPid_t;
+ 
++#ifndef _PID_T_DEFINED
++#define _PID_T_DEFINED
++typedef int pid_t;
++#endif
++
+ /* gettimeofday() replacement for Windows (struct timeval is in winsock2.h via os.h) */
+ int gettimeofday(struct timeval* tv, void* tz);
+ 
+diff --git a/projects/rccl/src/include/os/windows_compat/dlfcn.h b/projects/rccl/src/include/os/windows_compat/dlfcn.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e49f73af7d41448b2a4049f0bded48a0cb9146c9
+--- /dev/null
++++ b/projects/rccl/src/include/os/windows_compat/dlfcn.h
+@@ -0,0 +1,89 @@
++/*
++ * Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
++ * SPDX-License-Identifier: BSD-3-Clause
++ * Added for native-Windows RCCL compatibility.
++ */
++
++#ifndef RCCL_WINDOWS_COMPAT_DLFCN_H_
++#define RCCL_WINDOWS_COMPAT_DLFCN_H_
++
++#ifndef _WIN32
++#include_next <dlfcn.h>
++#else
++
++#include <Windows.h>
++
++#define RTLD_LAZY 0
++#define RTLD_NOW 1
++#define RTLD_LOCAL 0
++
++static thread_local char rcclWindowsDlError[256];
++static thread_local char rcclWindowsDlPath[32768];
++
++typedef struct {
++  const char* dli_fname;
++  void* dli_fbase;
++  const char* dli_sname;
++  void* dli_saddr;
++} Dl_info;
++
++static inline void rcclWindowsSetDlError(DWORD error) {
++  rcclWindowsDlError[0] = '\0';
++  FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
++                 nullptr, error, 0, rcclWindowsDlError,
++                 static_cast<DWORD>(sizeof(rcclWindowsDlError)), nullptr);
++}
++
++static inline void* dlopen(const char* filename, int) {
++  HMODULE module = LoadLibraryA(filename);
++  if (module == nullptr) rcclWindowsSetDlError(GetLastError());
++  return reinterpret_cast<void*>(module);
++}
++
++static inline void* dlsym(void* handle, const char* symbol) {
++  FARPROC address = GetProcAddress(reinterpret_cast<HMODULE>(handle), symbol);
++  if (address == nullptr) rcclWindowsSetDlError(GetLastError());
++  return reinterpret_cast<void*>(address);
++}
++
++static inline void* dlvsym(void* handle, const char* symbol, const char*) {
++  return dlsym(handle, symbol);
++}
++
++static inline int dladdr(const void* address, Dl_info* info) {
++  if (address == nullptr || info == nullptr) return 0;
++  HMODULE module = nullptr;
++  if (!GetModuleHandleExA(
++          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++          reinterpret_cast<LPCSTR>(address), &module)) {
++    rcclWindowsSetDlError(GetLastError());
++    return 0;
++  }
++  DWORD length = GetModuleFileNameA(
++      module, rcclWindowsDlPath,
++      static_cast<DWORD>(sizeof(rcclWindowsDlPath)));
++  if (length == 0 || length >= sizeof(rcclWindowsDlPath)) {
++    rcclWindowsSetDlError(GetLastError());
++    return 0;
++  }
++  info->dli_fname = rcclWindowsDlPath;
++  info->dli_fbase = reinterpret_cast<void*>(module);
++  info->dli_sname = nullptr;
++  info->dli_saddr = nullptr;
++  return 1;
++}
++
++static inline int dlclose(void* handle) {
++  if (handle == nullptr) return 0;
++  if (FreeLibrary(reinterpret_cast<HMODULE>(handle))) return 0;
++  rcclWindowsSetDlError(GetLastError());
++  return -1;
++}
++
++static inline const char* dlerror(void) {
++  return rcclWindowsDlError[0] == '\0' ? nullptr : rcclWindowsDlError;
++}
++
++#endif
++#endif
+diff --git a/projects/rccl/src/include/os/windows_compat/pthread.h b/projects/rccl/src/include/os/windows_compat/pthread.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e89430f4c6bee9c1e9db1021dd6e664c16c4295c
+--- /dev/null
++++ b/projects/rccl/src/include/os/windows_compat/pthread.h
+@@ -0,0 +1,78 @@
++/*
++ * Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
++ * SPDX-License-Identifier: BSD-3-Clause
++ * Added for native-Windows RCCL compatibility.
++ */
++
++#ifndef RCCL_WINDOWS_COMPAT_PTHREAD_H_
++#define RCCL_WINDOWS_COMPAT_PTHREAD_H_
++
++#ifndef _WIN32
++#include_next <pthread.h>
++#else
++
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++
++// wingdi.h reserves ERROR as a numeric macro, while RCCL uses ERROR(...) for
++// logging.  RCCL's definition is the one host translation units need.
++#ifdef ERROR
++#undef ERROR
++#endif
++
++typedef SRWLOCK pthread_mutex_t;
++typedef INIT_ONCE pthread_once_t;
++typedef HANDLE pthread_t;
++
++#define PTHREAD_MUTEX_INITIALIZER SRWLOCK_INIT
++#define PTHREAD_ONCE_INIT INIT_ONCE_STATIC_INIT
++
++static inline int pthread_mutex_init(pthread_mutex_t* mutex, const void*) {
++  InitializeSRWLock(mutex);
++  return 0;
++}
++
++static inline int pthread_mutex_destroy(pthread_mutex_t*) { return 0; }
++
++static inline int pthread_mutex_lock(pthread_mutex_t* mutex) {
++  AcquireSRWLockExclusive(mutex);
++  return 0;
++}
++
++static inline int pthread_mutex_unlock(pthread_mutex_t* mutex) {
++  ReleaseSRWLockExclusive(mutex);
++  return 0;
++}
++
++static inline BOOL CALLBACK rcclWindowsPthreadOnceCallback(PINIT_ONCE, PVOID parameter, PVOID*) {
++  reinterpret_cast<void (*)(void)>(parameter)();
++  return TRUE;
++}
++
++static inline int pthread_once(pthread_once_t* once, void (*initRoutine)(void)) {
++  return InitOnceExecuteOnce(once, rcclWindowsPthreadOnceCallback,
++                             reinterpret_cast<PVOID>(initRoutine), nullptr)
++           ? 0
++           : static_cast<int>(GetLastError());
++}
++
++static inline int pthread_setname_np(pthread_t thread, const char* name) {
++  if (thread == nullptr || name == nullptr) return ERROR_INVALID_PARAMETER;
++  int chars = MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
++  if (chars <= 0) return static_cast<int>(GetLastError());
++  wchar_t stackName[64];
++  if (chars > static_cast<int>(sizeof(stackName) / sizeof(stackName[0]))) return ERROR_BUFFER_OVERFLOW;
++  if (MultiByteToWideChar(CP_UTF8, 0, name, -1, stackName,
++                          static_cast<int>(sizeof(stackName) / sizeof(stackName[0]))) == 0)
++    return static_cast<int>(GetLastError());
++  HRESULT result = SetThreadDescription(thread, stackName);
++  return SUCCEEDED(result) ? 0 : static_cast<int>(result);
++}
++
++#endif
++#endif
+diff --git a/projects/rccl/src/include/os/windows_compat/sched.h b/projects/rccl/src/include/os/windows_compat/sched.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..895b6db8b620b25a4018e6aeea7542845c7b3fd2
+--- /dev/null
++++ b/projects/rccl/src/include/os/windows_compat/sched.h
+@@ -0,0 +1,21 @@
++/*
++ * Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
++ * SPDX-License-Identifier: BSD-3-Clause
++ * Added for native-Windows RCCL compatibility.
++ */
++
++#ifndef RCCL_WINDOWS_COMPAT_SCHED_H_
++#define RCCL_WINDOWS_COMPAT_SCHED_H_
++
++#ifndef _WIN32
++#include_next <sched.h>
++#else
++#include <Windows.h>
++
++static inline int sched_yield(void) {
++  SwitchToThread();
++  return 0;
++}
++
++#endif
++#endif
+diff --git a/projects/rccl/src/include/os/windows_compat/sys/time.h b/projects/rccl/src/include/os/windows_compat/sys/time.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..def0a1ff6fb7b5dc8d2dfec3736db6d1135eb23d
+--- /dev/null
++++ b/projects/rccl/src/include/os/windows_compat/sys/time.h
+@@ -0,0 +1,22 @@
++/*
++ * Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
++ * SPDX-License-Identifier: BSD-3-Clause
++ * Added for native-Windows RCCL compatibility.
++ */
++
++#pragma once
++
++#include <winsock2.h>
++#include <chrono>
++
++static inline int gettimeofday(struct timeval* tv, void*) {
++  if (tv == nullptr) return -1;
++
++  const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
++  const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed);
++  const auto microseconds =
++      std::chrono::duration_cast<std::chrono::microseconds>(elapsed - seconds);
++  tv->tv_sec = static_cast<long>(seconds.count());
++  tv->tv_usec = static_cast<long>(microseconds.count());
++  return 0;
++}
+diff --git a/projects/rccl/src/include/os/windows_compat/unistd.h b/projects/rccl/src/include/os/windows_compat/unistd.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f5b05d9976272fdb46d8d4b8b0122d283c6d18a0
+--- /dev/null
++++ b/projects/rccl/src/include/os/windows_compat/unistd.h
+@@ -0,0 +1,67 @@
++/*
++ * Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
++ * SPDX-License-Identifier: BSD-3-Clause
++ * Added for native-Windows RCCL compatibility.
++ */
++
++#ifndef RCCL_WINDOWS_COMPAT_UNISTD_H_
++#define RCCL_WINDOWS_COMPAT_UNISTD_H_
++
++#ifndef _WIN32
++#include_next <unistd.h>
++#else
++
++#include <Windows.h>
++#include <io.h>
++#include <process.h>
++#include <stddef.h>
++#include <sys/types.h>
++#include <errno.h>
++
++#ifndef F_OK
++#define F_OK 0
++#endif
++#ifndef R_OK
++#define R_OK 4
++#endif
++#ifndef _SC_PAGESIZE
++#define _SC_PAGESIZE 30
++#endif
++#ifndef HOST_NAME_MAX
++#define HOST_NAME_MAX 256
++#endif
++
++static inline int getpid(void) { return _getpid(); }
++static inline int access(const char* path, int mode) { return _access(path, mode); }
++static inline int close(int fd) {
++  // POSIX close(-1) reports EBADF. The Windows CRT instead invokes its
++  // invalid-parameter handler, which terminates the process with
++  // FAST_FAIL_INVALID_ARG unless a custom handler is installed.
++  if (fd < 0) {
++    errno = EBADF;
++    return -1;
++  }
++  return _close(fd);
++}
++static inline int read(int fd, void* buffer, unsigned int count) { return _read(fd, buffer, count); }
++static inline int write(int fd, const void* buffer, unsigned int count) { return _write(fd, buffer, count); }
++
++static inline long sysconf(int name) {
++  if (name != _SC_PAGESIZE) return -1;
++  SYSTEM_INFO info;
++  GetSystemInfo(&info);
++  return static_cast<long>(info.dwPageSize);
++}
++
++static inline int usleep(unsigned long microseconds) {
++  Sleep(static_cast<DWORD>((microseconds + 999) / 1000));
++  return 0;
++}
++
++static inline unsigned int sleep(unsigned int seconds) {
++  Sleep(seconds * 1000U);
++  return 0;
++}
++
++#endif
++#endif
+diff --git a/projects/rccl/src/include/plugin/nccl_net.h b/projects/rccl/src/include/plugin/nccl_net.h
+index b4bf955738f1d789631343da5f7c26b17ab5b8b5..015e45e8f5fcf532be783335a14b08319da437a7 100644
+--- a/projects/rccl/src/include/plugin/nccl_net.h
++++ b/projects/rccl/src/include/plugin/nccl_net.h
+@@ -16,7 +16,7 @@
+ 
+ #define NCCL_NET_HANDLE_MAXSIZE 128
+ // Maximum value NCCL can accept for maxP2pBytes and maxCollBytes net properties
+-#define NCCL_MAX_NET_SIZE_BYTES (1 * 1024 * 1024 * 1024 * 1024L)
++#define NCCL_MAX_NET_SIZE_BYTES (1ULL * 1024 * 1024 * 1024 * 1024)
+ #define NCCL_NET_OPTIONAL_RECV_COMPLETION 0x1
+ #define NCCL_NET_MULTI_REQUEST 0x2
+ 
+diff --git a/projects/rccl/src/include/rccl_common.h b/projects/rccl/src/include/rccl_common.h
+index 170015345d89d940683a90cccbe7879daa24cd66..b8a44784fefbc45fcd31588385b845d538326887 100644
+--- a/projects/rccl/src/include/rccl_common.h
++++ b/projects/rccl/src/include/rccl_common.h
+@@ -23,6 +23,7 @@ THE SOFTWARE.
+ #define RCCL_COMMON_H_
+ #include "nccl_common.h"
+ #include "nccl.h"
++#include "nccl_tuner.h"
+ #include "param.h"
+ #include "core.h"
+ #include "rccl_decision.h"
+diff --git a/projects/rccl/src/include/rocmwrap.h b/projects/rccl/src/include/rocmwrap.h
+index 245fea57bb9e1868801880fa79bd2f78e9707592..b08779e8c6b9a2a865e44111422b9e77b0b403c1 100644
+--- a/projects/rccl/src/include/rocmwrap.h
++++ b/projects/rccl/src/include/rocmwrap.h
+@@ -8,8 +8,13 @@
+ #ifndef NCCL_ROCMWRAP_H_
+ #define NCCL_ROCMWRAP_H_
+ 
++#if !defined(NCCL_OS_WINDOWS)
+ #include <hsa/hsa.h>
+ #include <hsa/hsa_ext_amd.h>  // hsa_amd_portable_export_dmabuf (DMA-BUF export)
++#else
++typedef int hsa_status_t;
++#define HSA_STATUS_SUCCESS 0
++#endif
+ #include <unistd.h>
+ #include "checks.h"
+ 
+@@ -82,8 +87,10 @@ ncclResult_t ncclCuStreamBatchMemOp(cudaStream_t stream, unsigned int numOps, CU
+ // undefined symbol), and pfn_hsa_amd_portable_export_dmabuf below stays the
+ // runtime feature gate. This declaration must precede every use of the symbol
+ // so all references (including the HSACHECK* macro call sites) are emitted weak.
++#if !defined(NCCL_OS_WINDOWS)
+ extern "C" hsa_status_t hsa_amd_portable_export_dmabuf(const void* ptr, size_t size, int* dmabuf, uint64_t* offset)
+   __attribute__((weak));
++#endif
+ 
+ // hsa_init, hsa_system_get_info and hsa_status_string are called directly via the
+ // hsa-runtime64 library that librccl links against. Only the DMA-BUF export entry
+@@ -102,12 +109,23 @@ typedef hsa_status_t (*PFN_hsa_amd_portable_export_dmabuf)(const void* ptr, size
+ // hsa_amd_portable_export_dmabuf stays gated by its function pointer and is not
+ // referenced as a symbol in every consumer TU. hsa_status_string is a required
+ // HSA entry point and is called directly.
++#if defined(NCCL_OS_WINDOWS)
++#define RCCL_HSA_STATUS_TEXT(err) "HSA is unavailable on native Windows"
++#else
++static inline const char* ncclHsaStatusText(hsa_status_t status) {
++  const char* text = nullptr;
++  hsa_status_string(status, &text);
++  return text;
++}
++#define RCCL_HSA_STATUS_TEXT(err) ncclHsaStatusText(err)
++#endif
++
+ #define HSACHECK(cmd) \
+   do { \
+     hsa_status_t err = pfn_##cmd; \
+     if (err != HSA_STATUS_SUCCESS) { \
+       const char* errStr; \
+-      hsa_status_string(err, &errStr); \
++      errStr = RCCL_HSA_STATUS_TEXT(err); \
+       WARN("HSA failure '%s' at %s:%d", errStr, __FILE__, __LINE__); \
+       return ncclUnhandledCudaError; \
+     } \
+@@ -118,7 +136,7 @@ typedef hsa_status_t (*PFN_hsa_amd_portable_export_dmabuf)(const void* ptr, size
+     hsa_status_t err = pfn_##cmd; \
+     if (err != HSA_STATUS_SUCCESS) { \
+       const char* errStr; \
+-      hsa_status_string(err, &errStr); \
++      errStr = RCCL_HSA_STATUS_TEXT(err); \
+       WARN("HSA failure '%s' at %s:%d", errStr, __FILE__, __LINE__); \
+       res = ncclUnhandledCudaError; \
+       goto label; \
+@@ -178,6 +196,15 @@ DECLARE_ROCM_PFN_EXTERN(hsa_amd_portable_export_dmabuf); // DMA-BUF feature gate
+ // pfn_hsa_amd_portable_export_dmabuf being non-NULL.
+ static inline bool ncclHsaRegMrDmaBuf(ncclResult_t (*regMrDmaBuf)(void*, void*, size_t, int, uint64_t, int, void**),
+                                       void* comm, void* buffer, size_t size, int type, void** mhandle) {
++#if defined(NCCL_OS_WINDOWS)
++  (void)regMrDmaBuf;
++  (void)comm;
++  (void)buffer;
++  (void)size;
++  (void)type;
++  (void)mhandle;
++  return false;
++#else
+   int fd = -1;
+   uint64_t offset = 0;
+   hsa_status_t status = pfn_hsa_amd_portable_export_dmabuf(buffer, size, &fd, &offset);
+@@ -194,6 +221,7 @@ static inline bool ncclHsaRegMrDmaBuf(ncclResult_t (*regMrDmaBuf)(void*, void*,
+     return false;
+   }
+   return true;
++#endif
+ }
+ 
+ extern int ncclCuMemEnable();
+diff --git a/projects/rccl/src/include/utils.h b/projects/rccl/src/include/utils.h
+index 3e1c3b6043fbd203d64b12691b90dd34a36b41a5..d33ebdbd8115539477983ac2e3a86325553c776e 100644
+--- a/projects/rccl/src/include/utils.h
++++ b/projects/rccl/src/include/utils.h
+@@ -18,6 +18,7 @@
+ #include <time.h>
+ #include <sched.h>
+ #include <algorithm>
++#include <chrono>
+ #include <new>
+ #include <type_traits>
+ #include <mutex>
+diff --git a/projects/rccl/src/init.cc b/projects/rccl/src/init.cc
+index 76202ca5e3e39b2adfe9384c2f66c99eb5382958..eb1c57e452507757e5b2a566aa663a12b14cbee3 100644
+--- a/projects/rccl/src/init.cc
++++ b/projects/rccl/src/init.cc
+@@ -42,7 +42,9 @@
+ #include <dlfcn.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
++#if !defined(NCCL_OS_WINDOWS)
+ #include <sys/resource.h>
++#endif
+ #include <unistd.h>
+ #include "graph/topo.h"
+ #include "graph/rome_topo_consensus.h"
+@@ -286,6 +288,7 @@ static ncclResult_t ncclInit() {
+   // early so the handler runs BEFORE HIP runtime static destructors.
+   rcclRegisterShutdownHandler();
+ 
++#if !defined(NCCL_OS_WINDOWS)
+   char strValue[2048];
+   NCCLCHECK(ncclOsTopoGetStrFromSys("/proc/sys/kernel", "numa_balancing", strValue, sizeof(strValue)));
+   if (strcmp(strValue, "1") == 0)
+@@ -326,6 +329,7 @@ static ncclResult_t ncclInit() {
+            "instablity or hang!");
+ #endif
+   }
++#endif
+   std::call_once(initOnceFlag, initOnceFunc);
+   return initResult;
+ }
+@@ -2293,12 +2297,12 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
+           channelId = ncclP2pChannelForPart(comm->p2pnChannels, sendBase, c, comm->p2pnChannelsPerPeer, comm->nNodes,
+                                             comm->p2pChannelShiftSize);
+           if (comm->channels[channelId].peers[peer]->send[1].connected == 0) {
+-            comm->connectSend[peer].masks[channelId / 64] |= (1UL << (channelId % 64));
++            comm->connectSend[peer].masks[channelId / 64] |= (1ULL << (channelId % 64));
+           }
+           channelId = ncclP2pChannelForPart(comm->p2pnChannels, recvBase, c, comm->p2pnChannelsPerPeer, comm->nNodes,
+                                             comm->p2pChannelShiftSize);
+           if (comm->channels[channelId].peers[peer]->recv[1].connected == 0) {
+-            comm->connectRecv[peer].masks[channelId / 64] |= (1UL << (channelId % 64));
++            comm->connectRecv[peer].masks[channelId / 64] |= (1ULL << (channelId % 64));
+           }
+         }
+       }
+diff --git a/projects/rccl/src/init_nvtx.cc b/projects/rccl/src/init_nvtx.cc
+index 5fde26a53db9cb1666c86793585e7c3a4482566b..56e2eb18c9f1d23ba53b29787056347f83a03f39 100644
+--- a/projects/rccl/src/init_nvtx.cc
++++ b/projects/rccl/src/init_nvtx.cc
+@@ -9,9 +9,11 @@
+ #include "nvtx.h"
+ #include "param.h"
+ 
++#ifndef NVTX_NO_IMPL
+ static constexpr const nvtxPayloadEnum_t NvtxEnumRedSchema[] = {
+   {"Sum", ncclSum, 0}, {"Product", ncclProd, 0}, {"Max", ncclMax, 0}, {"Min", ncclMin, 0}, {"Avg", ncclAvg, 0}
+ };
++#endif
+ 
+ NCCL_PARAM(NvtxDisable, "NVTX_DISABLE", 0);
+ 
+diff --git a/projects/rccl/src/ipc_init.cu b/projects/rccl/src/ipc_init.cu
+index f13247ef80bce2bb14ac071ce1b69aefcabb66f5..bdc6b60e9846994f6b6de9264d6e08368ff1f924 100644
+--- a/projects/rccl/src/ipc_init.cu
++++ b/projects/rccl/src/ipc_init.cu
+@@ -14,7 +14,8 @@
+ #include "dda_init_detail.h"
+ #include "ipc_mem_handler.h"
+ 
+-#include <cuda_runtime.h>
++#include <cuda_runtime.h>
++#include <iostream>
+ 
+ using nccl_dda_detail::DdaIpcBarrierState;
+ using nccl_dda_detail::ddaMaxNBlocksForScratch;
+diff --git a/projects/rccl/src/misc/alt_rsmi.cc b/projects/rccl/src/misc/alt_rsmi.cc
+index 002d02ba2d87992b0842430036d94b44b60d90a9..e0ff4605e33530300f30147a6b84f8e3097a48eb 100644
+--- a/projects/rccl/src/misc/alt_rsmi.cc
++++ b/projects/rccl/src/misc/alt_rsmi.cc
+@@ -4,6 +4,117 @@
+  * See LICENSE.txt for license information
+  ************************************************************************/
+ 
++#ifdef _WIN32
++
++#include <errno.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include <hip/hip_runtime_api.h>
++
++#include "alt_rsmi.h"
++#include "debug.h"
++
++static int ARSMI_num_devices = -1;
++
++static int hipToErrno(hipError_t status, const char* operation) {
++  if (status == hipSuccess) return 0;
++  WARN("%s failed: %s", operation, hipGetErrorString(status));
++  return EIO;
++}
++
++int ARSMI_init(void) {
++  if (ARSMI_num_devices >= 0) return 0;
++
++  int count = 0;
++  hipError_t status = hipGetDeviceCount(&count);
++  if (status == hipErrorNoDevice) {
++    ARSMI_num_devices = 0;
++    return 0;
++  }
++  int result = hipToErrno(status, "hipGetDeviceCount");
++  if (result != 0) return result;
++
++  ARSMI_num_devices = count;
++  INFO(NCCL_INIT, "Windows topology fallback discovered %d HIP devices", count);
++  return 0;
++}
++
++int ARSMI_get_num_devices(uint32_t* num_devices) {
++  if (num_devices == nullptr) return EINVAL;
++  int result = ARSMI_init();
++  if (result != 0) return result;
++  *num_devices = static_cast<uint32_t>(ARSMI_num_devices);
++  return 0;
++}
++
++int ARSMI_dev_pci_id_get(uint32_t device_index, uint64_t* bdfid) {
++  if (bdfid == nullptr) return EINVAL;
++  int result = ARSMI_init();
++  if (result != 0) return result;
++  if (device_index >= static_cast<uint32_t>(ARSMI_num_devices)) return EINVAL;
++
++  char bus_id[32] = {};
++  result = hipToErrno(hipDeviceGetPCIBusId(bus_id, sizeof(bus_id), static_cast<int>(device_index)),
++                      "hipDeviceGetPCIBusId");
++  if (result != 0) return result;
++
++  unsigned int domain = 0, bus = 0, device = 0, function = 0;
++  if (sscanf(bus_id, "%x:%x:%x.%x", &domain, &bus, &device, &function) != 4) {
++    WARN("Unable to parse HIP PCI bus ID '%s'", bus_id);
++    return EINVAL;
++  }
++
++  *bdfid = (static_cast<uint64_t>(domain) << 32) |
++           (static_cast<uint64_t>(bus) << 8) |
++           (static_cast<uint64_t>(device) << 3) |
++           static_cast<uint64_t>(function);
++  return 0;
++}
++
++int ARSMI_topo_get_link_info(uint32_t src, uint32_t dst, ARSMI_linkInfo* info) {
++  if (info == nullptr) return EINVAL;
++  int result = ARSMI_init();
++  if (result != 0) return result;
++  if (src >= static_cast<uint32_t>(ARSMI_num_devices) ||
++      dst >= static_cast<uint32_t>(ARSMI_num_devices)) return EINVAL;
++
++  int peer_access = 0;
++  result = hipToErrno(hipDeviceCanAccessPeer(&peer_access, static_cast<int>(src), static_cast<int>(dst)),
++                      "hipDeviceCanAccessPeer");
++  if (result != 0) return result;
++
++  memset(info, 0, sizeof(*info));
++  info->src_node = src;
++  info->dst_node = dst;
++  info->type = ARSMI_IOLINK_TYPE_PCIEXPRESS;
++  info->hops = src == dst ? 0 : (peer_access ? 1 : 2);
++  info->weight = src == dst ? 0 : (peer_access ? 20 : 40);
++  return 0;
++}
++
++int ARSMI_get_fw_version(uint32_t, uint64_t* fw_version) {
++  if (fw_version == nullptr) return EINVAL;
++  *fw_version = 0;
++  return 0;
++}
++
++int ARSMI_get_fabric_info(uint32_t, struct ARSMI_fabricInfo* info) {
++  if (info == nullptr) return EINVAL;
++  memset(info, 0, sizeof(*info));
++  info->fabric_type = ARSMI_FABRIC_TYPE_UNKNOWN;
++  info->accel_state = ARSMI_FABRIC_ACCELERATOR_VPOD_STATE_UNKNOWN;
++  info->addr_mode = ARSMI_FABRIC_NPA_ADDRESS_MODE_UNKNOWN;
++  return ENODEV;
++}
++
++const char* ARSMI_fabric_telem_id_to_string(uint64_t) {
++  return "UNKNOWN";
++}
++
++#else
++
+ #include <stdio.h>
+ #include <dirent.h>
+ #include <sys/types.h>
+@@ -840,3 +951,5 @@ int getGpuId(uint32_t node, uint64_t* gpu_id) {
+ 
+   return retVal;
+ }
++
++#endif
+diff --git a/projects/rccl/src/misc/api_trace.cc b/projects/rccl/src/misc/api_trace.cc
+index 8e76f198fd8ba4d947ebb98f497362644dab3858..ca53a97ed5e4138c195238035155b31516ccd182 100644
+--- a/projects/rccl/src/misc/api_trace.cc
++++ b/projects/rccl/src/misc/api_trace.cc
+@@ -95,7 +95,7 @@ ncclResult_t ncclCommSplit_impl(ncclComm_t comm, int color, int key, ncclComm_t*
+ 
+ const char* ncclGetErrorString_impl(ncclResult_t code);
+ 
+-const char* ncclGetLastError_impl(const ncclComm_t comm);
++const char* ncclGetLastError_impl(ncclComm_t comm);
+ 
+ ncclResult_t ncclCommGetAsyncError_impl(ncclComm_t comm, ncclResult_t* asyncError);
+ 
+diff --git a/projects/rccl/src/misc/kernel_config.cc b/projects/rccl/src/misc/kernel_config.cc
+index d5922a889cd983d0d72b721a5b59c80c93d0a2b1..e5c86833d134edebf7daecd58c1c808c06590d09 100644
+--- a/projects/rccl/src/misc/kernel_config.cc
++++ b/projects/rccl/src/misc/kernel_config.cc
+@@ -8,7 +8,9 @@
+ 
+ #include <stdio.h>
+ #include <string.h>
++#ifndef NCCL_OS_WINDOWS
+ #include <sys/utsname.h>
++#endif
+ #include <unistd.h>
+ 
+ #include <fstream>
+@@ -54,6 +56,11 @@ bool ncclKernelConfigReadFile(const char* path, std::string* content) {
+ }
+ 
+ bool ncclKernelConfigReadGzip(const char* path, std::string* content) {
++#ifdef NCCL_OS_WINDOWS
++  (void)path;
++  (void)content;
++  return false;
++#else
+   if (path == NULL || content == NULL) return false;
+   if (access(path, R_OK) != 0) return false;
+ 
+@@ -71,9 +78,16 @@ bool ncclKernelConfigReadGzip(const char* path, std::string* content) {
+ 
+   const int status = pclose(fp);
+   return status != -1 && !content->empty();
++#endif
+ }
+ 
+ bool ncclKernelConfigReadFirstAvailable(std::string* content, char* pathOut, size_t pathOutLen) {
++#ifdef NCCL_OS_WINDOWS
++  (void)content;
++  (void)pathOut;
++  (void)pathOutLen;
++  return false;
++#else
+   if (content == NULL) return false;
+ 
+   struct utsname utsname;
+@@ -99,9 +113,14 @@ bool ncclKernelConfigReadFirstAvailable(std::string* content, char* pathOut, siz
+   }
+ 
+   return false;
++#endif
+ }
+ 
+ bool ncclKernelHasConfigOption(const char* option) {
++#ifdef NCCL_OS_WINDOWS
++  (void)option;
++  return false;
++#else
+   std::string content;
+   char path[128];
+ 
+@@ -123,6 +142,7 @@ bool ncclKernelHasConfigOption(const char* option) {
+   }
+ 
+   return false;
++#endif
+ }
+ 
+ bool ncclIommuPassthroughOk(const char* cmdline) {
+diff --git a/projects/rccl/src/misc/recorder.cc b/projects/rccl/src/misc/recorder.cc
+index b576f4c1f00d04933a3d6fbad3334944fb852644..87e6b71fd1990adb1160cc1261b4de5f4f6a3fe4 100644
+--- a/projects/rccl/src/misc/recorder.cc
++++ b/projects/rccl/src/misc/recorder.cc
+@@ -6,7 +6,11 @@
+ #include <cstring>
+ #include <string>
+ #include <iomanip>
++#ifdef NCCL_OS_WINDOWS
++#include <windows.h>
++#else
+ #include <sys/syscall.h>
++#endif
+ #include "debug.h"
+ 
+ using namespace std::chrono;
+@@ -123,7 +127,11 @@ void Recorder::captureGpuContext(rcclApiCall& call) const {
+   call.timestamp = duration_cast<duration<double>>(high_resolution_clock::now().time_since_epoch()).count() * 1000;
+ 
+   if (rcclReplayThreadIdx == -1) {
++#ifdef NCCL_OS_WINDOWS
++    rcclReplayThreadIdx = static_cast<int>(GetCurrentThreadId());
++#else
+     rcclReplayThreadIdx = syscall(SYS_gettid);
++#endif
+   }
+ 
+   int hipDev = -1;
+diff --git a/projects/rccl/src/misc/rocmwrap.cc b/projects/rccl/src/misc/rocmwrap.cc
+index 5e5940cbf8627cf30f49ecf7068a0a8f6d336e5f..bc976096f80990e05c08852a6a37f9a51406e5bc 100644
+--- a/projects/rccl/src/misc/rocmwrap.cc
++++ b/projects/rccl/src/misc/rocmwrap.cc
+@@ -8,6 +8,70 @@
+ #include "nccl.h"
+ #include "debug.h"
+ #include "rocmwrap.h"
++#if defined(NCCL_OS_WINDOWS)
++#include "param.h"
++
++#include <cstdlib>
++
++#define DECLARE_ROCM_PFN(symbol) PFN_##symbol pfn_##symbol = nullptr
++
++DECLARE_ROCM_PFN(hsa_amd_portable_export_dmabuf);
++NCCL_PARAM(DmaBufEnable, "DMABUF_ENABLE", 0);
++RCCL_PARAM(ForceEnableDMABUF, "FORCE_ENABLE_DMABUF", 0);
++NCCL_PARAM(CuMemEnable, "CUMEM_ENABLE", 0);
++NCCL_PARAM(CuMemHostEnable, "CUMEM_HOST_ENABLE", 0);
++
++int ncclCudaDriverVersionCache = -1;
++bool ncclCudaLaunchBlocking = false;
++CUmemAllocationHandleType ncclCuMemHandleType = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
++
++static pthread_once_t initOnceControl = PTHREAD_ONCE_INIT;
++static ncclResult_t initResult = ncclInternalError;
++
++int ncclIsCuMemSupported() { return 0; }
++
++int ncclCuMemEnable() {
++  if (ncclParamCuMemEnable() > 0)
++    WARN("NCCL_CUMEM_ENABLE is unavailable on native Windows; disabling POSIX VMM sharing");
++  return 0;
++}
++
++int ncclCuMemHostEnable() {
++  if (ncclParamCuMemHostEnable() > 0)
++    WARN("NCCL_CUMEM_HOST_ENABLE is unavailable on native Windows; disabling it");
++  return 0;
++}
++
++static void initOnceFunc() {
++  const char* value = getenv("CUDA_LAUNCH_BLOCKING");
++  ncclCudaLaunchBlocking = value != nullptr && value[0] != 0 && !(value[0] == '0' && value[1] == 0);
++
++  int deviceCount = 0;
++  hipError_t result = hipGetDeviceCount(&deviceCount);
++  if (result != hipSuccess || deviceCount == 0) {
++    WARN("HIP initialization failed on native Windows: %s", hipGetErrorString(result));
++    initResult = ncclUnhandledCudaError;
++    return;
++  }
++
++  int driverVersion = 0;
++  result = hipDriverGetVersion(&driverVersion);
++  if (result != hipSuccess) {
++    WARN("HIP driver version query failed on native Windows: %s", hipGetErrorString(result));
++    initResult = ncclUnhandledCudaError;
++    return;
++  }
++  ncclCudaDriverVersionCache = driverVersion;
++  INFO(NCCL_INIT, "Native Windows HIP initialized with %d device(s), driver %d", deviceCount, driverVersion);
++  initResult = ncclSuccess;
++}
++
++ncclResult_t rocmLibraryInit() {
++  pthread_once(&initOnceControl, initOnceFunc);
++  return initResult;
++}
++
++#else
+ #include "archinfo.h"
+ #include "kernel_config.h"
+ #include "hsa/hsa.h"
+@@ -373,3 +437,4 @@ ncclResult_t rocmLibraryInit() {
+   pthread_once(&initOnceControl, initOnceFunc);
+   return initResult;
+ }
++#endif
+diff --git a/projects/rccl/src/misc/signals.cc b/projects/rccl/src/misc/signals.cc
+index 70f160970ad9e4178bb415a7ca011039cafb4e6e..9e3db7f321637a25590b5fe4b497816ffb95ca8a 100644
+--- a/projects/rccl/src/misc/signals.cc
++++ b/projects/rccl/src/misc/signals.cc
+@@ -8,15 +8,18 @@
+ #include "BfdBacktrace.hpp"
+ #endif
+ 
++#ifndef NCCL_OS_WINDOWS
+ #include <unistd.h>
+ #include <signal.h>
+ #include <execinfo.h>
++#endif
+ #include <string.h>
+ #include "param.h"
+ #include "debug.h"
+ #include <vector>
+ 
+-void sig_handler(int signum) {
++#ifndef NCCL_OS_WINDOWS
++static void sig_handler(int signum) {
+   printf("\n[Process: %d] Inside handler function signal: %s (%d)\n", getpid(), strsignal(signum), signum);
+ 
+ #ifdef HAVE_BFD
+@@ -57,11 +60,17 @@ void sig_handler(int signum) {
+ 
+   exit(-1);
+ }
++#endif
+ 
+ RCCL_PARAM(EnableSignalHandler, "ENABLE_SIGNALHANDLER",
+            0); // Opt-in environment variable for enabling custom signal handler
+ 
+ void RegisterSignalHandlers() {
++#ifdef NCCL_OS_WINDOWS
++  if (rcclParamEnableSignalHandler()) {
++    INFO(NCCL_INIT, "Custom POSIX signal backtraces are unavailable on native Windows");
++  }
++#else
+   if (rcclParamEnableSignalHandler()) {
+     INFO(NCCL_INIT, "Enabling custom signal handler");
+ 
+@@ -73,4 +82,5 @@ void RegisterSignalHandlers() {
+       }
+     }
+   }
++#endif
+ }
+diff --git a/projects/rccl/src/misc/socket.cc b/projects/rccl/src/misc/socket.cc
+index 445c16b23e5541434c0394c6b1e7198c54416cc3..3098ca92b4d12f43ea36a1e7819f4b11f1e51e84 100644
+--- a/projects/rccl/src/misc/socket.cc
++++ b/projects/rccl/src/misc/socket.cc
+@@ -603,13 +603,17 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
+     // [RCCL] Runtime socket options
+     if (rcclParamSocketReuseAddr()) {
+       int opt = 1;
+-      SYSCHECKGOTO(setsockopt(sock->socketDescriptor, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)), "setsockopt", ret,
+-                   fail);
++      SYSCHECKGOTO(setsockopt(sock->socketDescriptor, SOL_SOCKET, SO_REUSEADDR,
++                             reinterpret_cast<const char*>(&opt), sizeof(opt)),
++                   "setsockopt", ret, fail);
+     }
+     int lingerParam = (int)rcclParamSocketLinger();
+     if (lingerParam > -1) {
+-      linger linger_opt = {1, lingerParam};
+-      SYSCHECKGOTO(setsockopt(sock->socketDescriptor, SOL_SOCKET, SO_LINGER, &linger_opt, sizeof(linger_opt)),
++      linger linger_opt = {};
++      linger_opt.l_onoff = 1;
++      linger_opt.l_linger = static_cast<decltype(linger_opt.l_linger)>(lingerParam);
++      SYSCHECKGOTO(setsockopt(sock->socketDescriptor, SOL_SOCKET, SO_LINGER,
++                             reinterpret_cast<const char*>(&linger_opt), sizeof(linger_opt)),
+                    "setsockopt", ret, fail);
+     }
+   } else {
+diff --git a/projects/rccl/src/nccl_device/gin_scratch.cc b/projects/rccl/src/nccl_device/gin_scratch.cc
+index 36186e00ccead17f298dbecddc9cdefee68e6ded..6ac66e9d8c0e867661bbb0cb89395faec52bac12 100644
+--- a/projects/rccl/src/nccl_device/gin_scratch.cc
++++ b/projects/rccl/src/nccl_device/gin_scratch.cc
+@@ -6,13 +6,23 @@
+  *************************************************************************/
+ 
+ #include "core.h"
++#ifdef NCCL_OS_WINDOWS
++#include "nccl_device/gin_win_stub.h"
++#else
+ #include "../device/symmetric/gin_scratch__funcs.h"
++#endif
+ 
+ NCCL_API(ncclResult_t, ncclGinOutboxCreateRequirement, int nBlocks, int size_log2, ncclGinOutboxHandle* outHandle,
+          ncclDevResourceRequirements* outReq);
+ 
+ ncclResult_t ncclGinOutboxCreateRequirement(int nBlocks, int size_log2, ncclGinOutboxHandle* outHandle,
+                                             ncclDevResourceRequirements* outReq) {
++#ifdef NCCL_OS_WINDOWS
++  (void)nBlocks;
++  (void)size_log2;
++  memset(outHandle, 0, sizeof(*outHandle));
++  memset(outReq, 0, sizeof(*outReq));
++#else
+   memset(outReq, 0, sizeof(*outReq));
+   size_log2 = std::max<int>(size_log2, /*log2(128)=*/7);
+   outHandle->size_log2 = size_log2;
+@@ -20,6 +30,7 @@ ncclResult_t ncclGinOutboxCreateRequirement(int nBlocks, int size_log2, ncclGinO
+                                   alignUp(1 << size_log2, alignof(ncclGinOutboxState)));
+   outReq->bufferAlign = 128;
+   outReq->outBufferHandle = &outHandle->bufHandle;
++#endif
+   return ncclSuccess;
+ }
+ 
+@@ -28,6 +39,13 @@ NCCL_API(ncclResult_t, ncclGinInboxA2ACreateRequirement, ncclTeam peers, int nBl
+ 
+ ncclResult_t ncclGinInboxA2ACreateRequirement(ncclTeam peers, int nBlocks, int size_log2,
+                                               ncclGinInboxA2AHandle* outHandle, ncclDevResourceRequirements* outReq) {
++#ifdef NCCL_OS_WINDOWS
++  (void)peers;
++  (void)nBlocks;
++  (void)size_log2;
++  memset(outHandle, 0, sizeof(*outHandle));
++  memset(outReq, 0, sizeof(*outReq));
++#else
+   int nPeers = peers.nRanks - 1;
+   memset(outReq, 0, sizeof(*outReq));
+   outHandle->size_log2 = size_log2;
+@@ -38,5 +56,6 @@ ncclResult_t ncclGinInboxA2ACreateRequirement(ncclTeam peers, int nBlocks, int s
+   outReq->outBufferHandle = &outHandle->bufHandle;
+   outReq->ginSignalCount = nBlocks * 4 * (nPeers + (1 << ncclGinScratchMaxBufs_log2));
+   outReq->outGinSignalStart = &outHandle->signals;
++#endif
+   return ncclSuccess;
+ }
+diff --git a/projects/rccl/src/os/windows.cc b/projects/rccl/src/os/windows.cc
+index 1d54d984078c6e33c0f2fcd7421f37b2a672b735..c97e0075401c5a66516cb15fbf39b30bea52803d 100644
+--- a/projects/rccl/src/os/windows.cc
++++ b/projects/rccl/src/os/windows.cc
+@@ -178,8 +178,8 @@ bool ncclOsSocketIsValid(struct ncclSocket* sock) {
+   return ncclOsSocketDescriptorIsValid(sock->socketDescriptor);
+ }
+ 
+-extern int ncclParamPollTimeOut();
+-extern int ncclParamRetryTimeOut();
++extern int64_t ncclParamPollTimeOut();
++extern int64_t ncclParamRetryTimeOut();
+ 
+ void ncclOsPollSocket(SOCKET sock, int op) {
+   WSAPOLLFD pfd;
+@@ -196,7 +196,7 @@ static const char* getWSAErrorMessage(int error) {
+   return errorMsg;
+ }
+ 
+-extern long int ncclParamRetryCnt();
++extern int64_t ncclParamRetryCnt();
+ 
+ ncclResult_t ncclOsSocketTryAccept(struct ncclSocket* sock) {
+   int socklen = sizeof(union ncclSocketAddress);
+@@ -223,8 +223,8 @@ ncclResult_t ncclOsSocketTryAccept(struct ncclSocket* sock) {
+   return ncclSuccess;
+ }
+ 
+-extern int ncclParamSocketMaxRecvBuff();
+-extern int ncclParamSocketMaxSendBuff();
++extern int64_t ncclParamSocketMaxRecvBuff();
++extern int64_t ncclParamSocketMaxSendBuff();
+ 
+ ncclResult_t ncclOsSocketSetFlags(struct ncclSocket* sock) {
+   const int one = 1;
+@@ -427,6 +427,7 @@ ncclResult_t ncclOsFindInterfaces(const char* prefixList, char* names, union ncc
+   int nUserIfs = parseStringList(prefixList, userIfs, MAX_IFS);
+   ncclResult_t ret = ncclSuccess;
+   *found = 0;
++  IP_ADAPTER_ADDRESSES* adapterAddresses = nullptr;
+ 
+   // Get adapter addresses using Windows API
+   ULONG bufferSize = 0;
+@@ -437,7 +438,7 @@ ncclResult_t ncclOsFindInterfaces(const char* prefixList, char* names, union ncc
+     goto exit;
+   }
+ 
+-  IP_ADAPTER_ADDRESSES* adapterAddresses = (IP_ADAPTER_ADDRESSES*)malloc(bufferSize);
++  adapterAddresses = (IP_ADAPTER_ADDRESSES*)malloc(bufferSize);
+   if (adapterAddresses == NULL) {
+     WARN("Failed to allocate memory for adapter addresses");
+     ret = ncclSystemError;
+@@ -591,6 +592,7 @@ ncclResult_t ncclFindInterfaceMatchSubnet(char* ifName, union ncclSocketAddress*
+ #endif
+   ncclResult_t ret = ncclSuccess;
+   *found = 0;
++  IP_ADAPTER_ADDRESSES* adapterAddresses = nullptr;
+ 
+   // Get adapter addresses using Windows API
+   ULONG bufferSize = 0;
+@@ -601,7 +603,7 @@ ncclResult_t ncclFindInterfaceMatchSubnet(char* ifName, union ncclSocketAddress*
+     goto exit;
+   }
+ 
+-  IP_ADAPTER_ADDRESSES* adapterAddresses = (IP_ADAPTER_ADDRESSES*)malloc(bufferSize);
++  adapterAddresses = (IP_ADAPTER_ADDRESSES*)malloc(bufferSize);
+   if (adapterAddresses == NULL) {
+     WARN("Failed to allocate memory for adapter addresses");
+     ret = ncclSystemError;
+@@ -611,7 +613,6 @@ ncclResult_t ncclFindInterfaceMatchSubnet(char* ifName, union ncclSocketAddress*
+   result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapterAddresses, &bufferSize);
+   if (result != NO_ERROR) {
+     WARN("GetAdaptersAddresses failed with error: %ld", result);
+-    free(adapterAddresses);
+     ret = ncclSystemError;
+     goto exit;
+   }
+@@ -694,7 +695,13 @@ void ncclOsCpuZero(ncclAffinity& affinity) {
+ }
+ 
+ int ncclOsCpuCount(const ncclAffinity& affinity) {
+-  return _mm_popcnt_u64(affinity);
++  uint64_t bits = affinity;
++  int count = 0;
++  while (bits != 0) {
++    bits &= bits - 1;
++    ++count;
++  }
++  return count;
+ }
+ 
+ void ncclOsCpuSet(ncclAffinity& affinity, int cpu) {
+@@ -891,12 +898,18 @@ ncclResult_t ncclOsShmOpen(char* shmPath, size_t shmPathSize, size_t shmSize, vo
+     INFO(NCCL_ALLOC,
+          "SHM legacy: sharing buffer with GPU via cudaHostRegister + cudaHostGetDevicePointer (host %p size %ld)",
+          (void*)hptr, (long)realShmSize);
+-    cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+     cudaError_t regRes = cudaThreadExchangeStreamCaptureMode(&mode);
+-    if (regRes == cudaSuccess)
++    if (regRes == cudaSuccess) captureModeSet = true;
++    if (regRes == cudaSuccess) {
+       regRes = cudaHostRegister((void*)hptr, realShmSize, cudaHostRegisterPortable | cudaHostRegisterMapped);
++      registered = regRes == cudaSuccess;
++    }
+     if (regRes == cudaSuccess) regRes = cudaHostGetDevicePointer(&dptr, (void*)hptr, 0);
+-    if (regRes == cudaSuccess) regRes = cudaThreadExchangeStreamCaptureMode(&mode);
++    if (captureModeSet) {
++      cudaError_t modeRes = cudaThreadExchangeStreamCaptureMode(&mode);
++      captureModeSet = false;
++      if (regRes == cudaSuccess) regRes = modeRes;
++    }
+     /* cudaHostRegister on MapViewOfFile memory often fails (driver limitation).
+      * Do not fail the open; leave dptr unset so transport can use staging path. */
+     if (regRes != cudaSuccess) {
+@@ -904,6 +917,10 @@ ncclResult_t ncclOsShmOpen(char* shmPath, size_t shmPathSize, size_t shmSize, vo
+            "SHM legacy: cudaHostRegister/cudaHostGetDevicePointer failed: %s; segment will be used unpinned (staging "
+            "path)",
+            cudaGetErrorString(regRes));
++      if (registered) {
++        (void)cudaHostUnregister((void*)hptr);
++        registered = false;
++      }
+       dptr = NULL;
+     }
+   }
+diff --git a/projects/rccl/src/os/windows_optional_plugins.cc b/projects/rccl/src/os/windows_optional_plugins.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..d641dda1d514423ac7f18b748b3fb0ab5f56632b
+--- /dev/null
++++ b/projects/rccl/src/os/windows_optional_plugins.cc
+@@ -0,0 +1,163 @@
++/*************************************************************************
++ * Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * Windows fallbacks for optional Linux-only RCCL services.
++ *
++ * These symbols deliberately report no GIN/RMA devices and do not enable
++ * the CSV tuner or RAS monitor. Core collectives and the socket NET plugin
++ * remain real implementations.
++ *************************************************************************/
++
++#if defined(NCCL_OS_WINDOWS)
++
++#include "comm.h"
++#include "gin.h"
++#include "ras.h"
++#include "rma.h"
++#include "tuner.h"
++
++#include <cstring>
++
++ncclTuner_t rcclCsvTuner = {};
++
++const char* rcclCsvTunerFindConfig(const char* gpuArch) {
++  (void)gpuArch;
++  return nullptr;
++}
++
++void rcclCsvTunerResetConfigPath() {}
++
++ncclResult_t ncclGinInit(struct ncclComm* comm) {
++  comm->ginContext = nullptr;
++  comm->ginPluginIndex = -1;
++  if (comm->sharedRes != nullptr) {
++    comm->sharedRes->ginState.ncclGin = nullptr;
++    comm->sharedRes->ginState.ginType = NCCL_GIN_TYPE_NONE;
++    comm->sharedRes->ginState.connected = false;
++  }
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGinInitFromParent(struct ncclComm* comm, struct ncclComm* parent) {
++  (void)parent;
++  return ncclGinInit(comm);
++}
++
++ncclResult_t ncclGinFinalize(struct ncclComm* comm) {
++  (void)comm;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGinGetDevCount(int ginPluginIndex, int* nPhysDev, int* nVirtDev) {
++  (void)ginPluginIndex;
++  if (nPhysDev != nullptr) *nPhysDev = 0;
++  if (nVirtDev != nullptr) *nVirtDev = -1;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGetGinType(struct ncclComm* comm, ncclGinType_t* ginType) {
++  if (comm == nullptr || ginType == nullptr) return ncclInvalidArgument;
++  *ginType = NCCL_GIN_TYPE_NONE;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGetRailedGinType(struct ncclComm* comm, ncclGinType_t* ginType) {
++  if (comm == nullptr || ginType == nullptr) return ncclInvalidArgument;
++  *ginType = NCCL_GIN_TYPE_NONE;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
++  (void)comm;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequirements const* reqs,
++                                 struct ncclDevComm* devComm) {
++  (void)comm;
++  (void)reqs;
++  (void)devComm;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGinDevCommFree(struct ncclComm* comm, struct ncclDevComm const* devComm) {
++  (void)comm;
++  (void)devComm;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGinHostFinalize(struct ncclComm* comm) {
++  (void)comm;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
++                             void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS],
++                             ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS], int winFlags, bool multiSegment,
++                             int memType) {
++  (void)comm;
++  (void)address;
++  (void)size;
++  (void)winFlags;
++  (void)multiSegment;
++  (void)memType;
++  if (ginHostWins != nullptr) std::memset(ginHostWins, 0, sizeof(void*) * NCCL_GIN_MAX_CONNECTIONS);
++  if (ginDevWins != nullptr) std::memset(ginDevWins, 0, sizeof(ncclGinWindow_t) * NCCL_GIN_MAX_CONNECTIONS);
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGinDeregister(struct ncclComm* comm, void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS]) {
++  (void)comm;
++  (void)ginHostWins;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError) {
++  (void)ginState;
++  if (hasError != nullptr) *hasError = false;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclRmaInit(struct ncclComm* comm) {
++  comm->rmaContext = nullptr;
++  comm->rmaPluginIndex = -1;
++  comm->rmaState.rmaProxyState.ncclRma = nullptr;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclRmaInitFromParent(struct ncclComm* comm, struct ncclComm* parent) {
++  (void)parent;
++  return ncclRmaInit(comm);
++}
++
++ncclResult_t ncclRmaFinalize(struct ncclComm* comm) {
++  (void)comm;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclRmaGetDevCount(int rmaPluginIndex, int* nPhysDev, int* nVirtDev) {
++  (void)rmaPluginIndex;
++  if (nPhysDev != nullptr) *nPhysDev = 0;
++  if (nVirtDev != nullptr) *nVirtDev = -1;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclRasCommInit(struct ncclComm* comm, struct rasRankInit* myRank) {
++  (void)comm;
++  (void)myRank;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclRasAddRanks(struct rasRankInit* ranks, int nranks) {
++  (void)ranks;
++  (void)nranks;
++  return ncclSuccess;
++}
++
++ncclResult_t ncclRasCommFini(const struct ncclComm* comm) {
++  (void)comm;
++  return ncclSuccess;
++}
++
++#endif
+diff --git a/projects/rccl/src/plugin/net.cc b/projects/rccl/src/plugin/net.cc
+index bbfda07ea12ae07afcd7211dc2d084cdabfd72c6..9711104d098db02fc29c9479d115f5fffd770464 100644
+--- a/projects/rccl/src/plugin/net.cc
++++ b/projects/rccl/src/plugin/net.cc
+@@ -47,7 +47,11 @@ getNcclCollNet_t* getNcclCollNet[NCCL_NET_VERSION_COUNT] = {getNcclCollNet_v12,
+                                                             getNcclCollNet_v9,  getNcclCollNet_v8,  getNcclCollNet_v7,
+                                                             getNcclCollNet_v6};
+ 
++#ifdef NCCL_OS_WINDOWS
++#define NCCL_NET_NUM_INTERNAL_PLUGINS 1
++#else
+ #define NCCL_NET_NUM_INTERNAL_PLUGINS 2
++#endif
+ 
+ typedef enum ncclNetPluginState {
+   ncclNetPluginStateDisabled = -2,       // Plugin library failed to initialize
+@@ -301,7 +305,9 @@ static void initPluginLibsOnceFunc() {
+     strcpy(netPluginLibs[pluginCounter++].name, defaultNetPlugin);
+   }
+ 
+-  // Add 2 internal ib and socket plugins
++  // Linux provides internal IB and socket plugins. Native Windows keeps the
++  // socket plugin; libibverbs and Linux GPUDirect-RDMA have no Windows ABI.
++#ifndef NCCL_OS_WINDOWS
+ #if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+   {
+     const char* envNet = ncclGetEnv("NCCL_NET");
+@@ -320,6 +326,7 @@ static void initPluginLibsOnceFunc() {
+ #if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+     }
+   }
++#endif
+ #endif
+   netPluginLibs[pluginCounter].ncclNet = &ncclNetSocket;
+   netPluginLibs[pluginCounter++].ncclNetPluginState = ncclNetPluginStateInitReady;
+diff --git a/projects/rccl/src/proxy.cc b/projects/rccl/src/proxy.cc
+index d89dd3a91f254006d5acaf151713993072610b01..79cffa41b2b1ec1cd1cfa6e2d746dc3ce099d87e 100644
+--- a/projects/rccl/src/proxy.cc
++++ b/projects/rccl/src/proxy.cc
+@@ -2156,8 +2156,13 @@ ncclResult_t ncclProxyInit(struct ncclComm* comm, struct ncclSocket* sock, union
+   comm->proxyState->peerAddressesUDS = peerAddressesUDS;
+   comm->proxyState->netAttr = NCCL_NET_ATTR_INIT;
+ 
+-  // UDS support
+-  NCCLCHECK(ncclIpcSocketInit(&comm->proxyState->ipcSock, comm->rank, peerAddressesUDS[comm->rank], comm->abortFlag));
++  // The UDS service is only used to exchange cuMem allocation handles. Native
++  // Windows HIP currently runs this port with cuMem disabled; starting the
++  // Unix-fd compatibility service in that configuration is both unnecessary
++  // and unsafe because a Win32 HANDLE is wider than the upstream int fd API.
++  if (ncclCuMemEnable()) {
++    NCCLCHECK(ncclIpcSocketInit(&comm->proxyState->ipcSock, comm->rank, peerAddressesUDS[comm->rank], comm->abortFlag));
++  }
+   return ncclSuccess;
+ }
+ 
+@@ -2194,10 +2199,11 @@ ncclResult_t ncclProxyCreate(struct ncclComm* comm) {
+     comm->proxyState->thread = std::thread(ncclProxyService, comm->proxyState);
+     ncclSetThreadName(comm->proxyState->thread, "NCCL Service %2d", comm->cudaDev);
+ 
+-    // UDS support
+-    INFO(NCCL_PROXY, "UDS: Creating service thread comm %p rank %d", comm, comm->rank);
+-    comm->proxyState->threadUDS = std::thread(ncclProxyServiceUDS, comm->proxyState);
+-    ncclSetThreadName(comm->proxyState->threadUDS, "NCCL UDS Service %2d", comm->cudaDev);
++    if (ncclCuMemEnable()) {
++      INFO(NCCL_PROXY, "UDS: Creating service thread comm %p rank %d", comm, comm->rank);
++      comm->proxyState->threadUDS = std::thread(ncclProxyServiceUDS, comm->proxyState);
++      ncclSetThreadName(comm->proxyState->threadUDS, "NCCL UDS Service %2d", comm->cudaDev);
++    }
+   }
+   return ncclSuccess;
+ }
+diff --git a/projects/rccl/src/transport.cc b/projects/rccl/src/transport.cc
+index 787c6eac664e9118ee56222644f3cd9ff709e9b2..173e83fda6d2c91e31e8a02a1f56d49ab5c7c659 100644
+--- a/projects/rccl/src/transport.cc
++++ b/projects/rccl/src/transport.cc
+@@ -23,6 +23,10 @@ static ncclResult_t selectTransport(struct ncclComm* comm, struct ncclTopoGraph*
+                                     int channelId, int peer, int connIndex, int* transportType, bool* needsProxy) {
+   struct ncclPeerInfo* myInfo = comm->peerInfo + comm->rank;
+   struct ncclPeerInfo* peerInfo = comm->peerInfo + peer;
++  if (comm->channels[channelId].peers == NULL || comm->channels[channelId].peers[peer] == NULL) {
++    WARN("selectTransport missing peer storage for channel %d peer %d", channelId, peer);
++    return ncclInternalError;
++  }
+   struct ncclConnector* connector = (type == 1) ? comm->channels[channelId].peers[peer]->send + connIndex :
+                                                   comm->channels[channelId].peers[peer]->recv + connIndex;
+   // handle intra-node network connections
+@@ -60,7 +64,7 @@ ncclResult_t ncclTransportP2pConnect(struct ncclComm* comm, int channelId, int n
+   TRACE(NCCL_INIT, "nsend %d nrecv %d", nsend, nrecv);
+   struct ncclChannel* channel = &comm->channels[channelId];
+   // uint64_t mask = 1UL << channel->id;
+-  uint64_t mask = 1UL << (channel->id % 64);
++  uint64_t mask = 1ULL << (channel->id % 64);
+ 
+   for (int i = 0; i < nrecv; i++) {
+     int peer = peerRecv[i];
+@@ -209,7 +213,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph*
+     TIME_START(0);
+     for (int c = 0; c < MAXCHANNELS; c++) {
+       // if (recvMask & (1UL<<c)) {
+-      if (recvMask.masks[c / 64] & (1UL << (c % 64))) {
++      if (recvMask.masks[c / 64] & (1ULL << (c % 64))) {
+         NCCLCHECKGOTO(selectTransport<0>(comm, graph, recvData[p] + recvChannels++, c, recvPeer, connIndex, &type,
+                                          &proxy),
+                       ret, fail);
+@@ -220,7 +224,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph*
+     sendData[p] = recvData[p] + recvChannels;
+     for (int c = 0; c < MAXCHANNELS; c++) {
+       // if (sendMask & (1UL<<c)) {
+-      if (sendMask.masks[c / 64] & (1UL << (c % 64))) {
++      if (sendMask.masks[c / 64] & (1ULL << (c % 64))) {
+         NCCLCHECKGOTO(selectTransport<1>(comm, graph, sendData[p] + sendChannels++, c, sendPeer, connIndex, &type,
+                                          &proxy),
+                       ret, fail);
+@@ -281,7 +285,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph*
+           for (int c = 0; c < MAXCHANNELS; c++) {
+             TIME_START(3);
+             // if (sendMask & (1UL<<c)) {
+-            if (sendMask.masks[c / 64] & (1UL << (c % 64))) {
++            if (sendMask.masks[c / 64] & (1ULL << (c % 64))) {
+               struct ncclConnector* conn = comm->channels[c].peers[sendPeer]->send + connIndex;
+               // This connector hasn't completed connection yet
+               if (conn->connected == 0) {
+@@ -305,7 +309,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph*
+             // Start with recv channels
+             TIME_START(4);
+             // if (recvMask & (1UL<<c)) {
+-            if (recvMask.masks[c / 64] & (1UL << (c % 64))) {
++            if (recvMask.masks[c / 64] & (1ULL << (c % 64))) {
+               struct ncclConnector* conn = comm->channels[c].peers[recvPeer]->recv + connIndex;
+               // This connector hasn't completed connection yet
+               if (conn->connected == 0) {
+diff --git a/projects/rccl/src/transport/net.cc b/projects/rccl/src/transport/net.cc
+index 9b081818fc3edd1cfb80b93feebc57d4cb501c6f..8e5259718ca0ba402153fedfd24891f95f9055c2 100644
+--- a/projects/rccl/src/transport/net.cc
++++ b/projects/rccl/src/transport/net.cc
+@@ -27,9 +27,11 @@
+ #include "nccl_net.h"
+ #include "register_inline.h"
+ #include <stdio.h>
++#if !defined(NCCL_OS_WINDOWS)
+ #include <glob.h>
+ #include <dirent.h>
+ #include <linux/limits.h>
++#endif
+ #include <mutex>
+ 
+ static_assert(sizeof(ncclNetHandle_t) <= CONNECT_SIZE, "NET Connect info is too large");
+@@ -211,9 +213,14 @@ struct setupReq {
+ 
+ NCCL_PARAM(NetOptionalRecvCompletion, "NET_OPTIONAL_RECV_COMPLETION", 1);
+ 
++#if defined(NCCL_OS_WINDOWS)
++static rcclIBNicInfo rcclPrimaryNicInfo = {rcclIBNicTypeDefault, 0, 0};
++#else
+ static rcclIBNicInfo rcclPrimaryNicInfo = {rcclIBNicTypeUnknown, 0, 0};
++#endif
+ 
+ RCCL_PARAM(AinicRoce, "AINIC_ROCE", -1);
++#if !defined(NCCL_OS_WINDOWS)
+ static const char* sysfsIBPath = "/sys/class/infiniband";
+ 
+ static int readIBNicRate(const char* devName) {
+@@ -349,6 +356,15 @@ rcclIBNicInfo rcclPrimaryNic() {
+   std::call_once(rcclDetectIBNicsOnce, rcclDetectIBNics);
+   return rcclPrimaryNicInfo;
+ }
++#else
++bool rcclUseAinic() {
++  return false;
++}
++
++rcclIBNicInfo rcclPrimaryNic() {
++  return rcclPrimaryNicInfo;
++}
++#endif
+ 
+ static_assert(sizeof(ncclNetHandle_t) + sizeof(int) <= CONNECT_SIZE,
+               "Not large enough ncclConnect to hold ncclNetHandle_t and useGdr flag");
+@@ -459,8 +475,8 @@ static inline int getHandleForAddressRangeFlags(ncclTopoGdrMode useGdr) {
+ /* Determine if we will use this transport for this peer and return connect
+  * information for this peer */
+ static ncclResult_t sendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo* myInfo,
+-                              struct ncclPeerInfo* peerInfo, struct ncclConnect* connectInfo,
+-                              struct ncclConnector* send, int channelId, int connIndex) {
++                               struct ncclPeerInfo* peerInfo, struct ncclConnect* connectInfo,
++                               struct ncclConnector* send, int channelId, int connIndex) {
+   struct setupReq req = {0};
+ 
+   send->conn.shared = req.shared = (graph || connIndex == 0)         ? 0 :
+@@ -994,9 +1010,9 @@ static ncclResult_t sendProxySetup(struct ncclProxyConnection* connection, struc
+   /* point-to-point size limits*/
+   resources->maxP2pBytes = props.maxP2pBytes;
+   if ((resources->maxP2pBytes <= 0) || (resources->maxP2pBytes > NCCL_MAX_NET_SIZE_BYTES)) {
+-    WARN("sendProxySetup: net plugin returned invalid value for maxP2pBytes %ld \
+-      [allowed range: %ld - %ld] \n",
+-         resources->maxP2pBytes, 0L, NCCL_MAX_NET_SIZE_BYTES);
++    WARN("sendProxySetup: net plugin returned invalid value for maxP2pBytes %zu \
++      [allowed range: %zu - %zu] \n",
++         resources->maxP2pBytes, (size_t)0, (size_t)NCCL_MAX_NET_SIZE_BYTES);
+     return ncclInternalError;
+   }
+ 
+@@ -1049,9 +1065,9 @@ static ncclResult_t recvProxySetup(struct ncclProxyConnection* connection, struc
+   /* point-to-point size limits*/
+   resources->maxP2pBytes = props.maxP2pBytes;
+   if ((resources->maxP2pBytes <= 0) || (resources->maxP2pBytes > NCCL_MAX_NET_SIZE_BYTES)) {
+-    WARN("recvProxySetup: net plugin returned invalid value for maxP2pBytes %ld \
+-      [allowed range: %ld - %ld] \n",
+-         resources->maxP2pBytes, 0L, NCCL_MAX_NET_SIZE_BYTES);
++    WARN("recvProxySetup: net plugin returned invalid value for maxP2pBytes %zu \
++      [allowed range: %zu - %zu] \n",
++         resources->maxP2pBytes, (size_t)0, (size_t)NCCL_MAX_NET_SIZE_BYTES);
+     return ncclInternalError;
+   }
+ 
+@@ -1099,7 +1115,9 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
+   NCCLCHECK(ncclNetGetDeviceHandle(resources->netDeviceType, resources->netDeviceVersion, false /*isRecv*/,
+                                    &resources->netDeviceHandle));
+ 
+-  // Only call rcclNetP2pPolicy for ncclNetIb
++  // Only call rcclNetP2pPolicy for ncclNetIb. Windows has no built-in
++  // libibverbs transport and registers only the socket backend here.
++#ifndef NCCL_OS_WINDOWS
+   if (proxyState->ncclNet == &ncclNetIb) {
+     NCCLCHECK(rcclNetP2pPolicy(req->handle, resources->isP2p));
+   }
+@@ -1108,6 +1126,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
+   if (proxyState->ncclNet == &netIbCast) {
+     NCCLCHECK(rcclCastNetP2pPolicy(req->handle, resources->isP2p));
+   }
++#endif
+ #endif
+ 
+   if (resources->shared) {
+diff --git a/projects/rccl/src/transport/net_socket.cc b/projects/rccl/src/transport/net_socket.cc
+index 8343ea9858337886102d49dd423c9fc975be758f..90a8aa96d8114b730dd566482d3019e59d0c4db1 100644
+--- a/projects/rccl/src/transport/net_socket.cc
++++ b/projects/rccl/src/transport/net_socket.cc
+@@ -31,10 +31,15 @@ static struct ncclNetSocketDev ncclNetSocketDevs[MAX_IFS];
+ static std::mutex ncclNetSocketMutex;
+ 
+ static ncclResult_t ncclNetSocketGetPciPath(char* devName, char** pciPath) {
++#if defined(NCCL_OS_WINDOWS)
++  (void)devName;
++  *pciPath = nullptr;
++#else
+   char devicePath[PATH_MAX];
+   snprintf(devicePath, PATH_MAX, "/sys/class/net/%s/device", devName);
+   // May return NULL if the file doesn't exist.
+   *pciPath = ncclOsRealpath(devicePath, NULL);
++#endif
+   return ncclSuccess;
+ }
+ 
+@@ -358,6 +363,7 @@ ncclResult_t ncclNetSocketGetNsockNthread(int dev, int* ns, int* nt) {
+   if (nThreads == -2 || nSocksPerThread == -2) {
+     // Auto-detection
+     int autoNt = 0, autoNs = 1; // By default, we only use the main thread and do not spawn extra threads
++#if !defined(NCCL_OS_WINDOWS)
+     char vendorPath[PATH_MAX];
+     snprintf(vendorPath, PATH_MAX, "/sys/class/net/%s/device/vendor", ncclNetSocketDevs[dev].devName);
+     // Coverity is wrong.  NULL second argument to realpath() is OK by POSIX.1-2008.
+@@ -384,6 +390,7 @@ ncclResult_t ncclNetSocketGetNsockNthread(int dev, int* ns, int* nt) {
+       autoNs = 1;
+     }
+   end:
++#endif
+     if (nThreads == -2) nThreads = autoNt;
+     if (nSocksPerThread == -2) nSocksPerThread = autoNs;
+   }
+diff --git a/projects/rccl/tools/ib-test/ib_test.cpp b/projects/rccl/tools/ib-test/ib_test.cpp
+index b0f94af18874e186d8f56569b5c66324a4f23fbb..752e9ead3fd32e40c2c512dc284bf5c1abe0c533 100755
+--- a/projects/rccl/tools/ib-test/ib_test.cpp
++++ b/projects/rccl/tools/ib-test/ib_test.cpp
+@@ -79,7 +79,9 @@ bool cmdOptionExists(char** begin, char** end, const std::string& option) {
+ #define ENABLE_VALIDATION
+ #define USE_UNROLL 8
+ 
+-typedef ulong2 Pack128;
++typedef ulonglong2 Pack128;
++static_assert(sizeof(Pack128) == 16 && sizeof(Pack128{}.x) == 8,
++              "Pack128 requires two 64-bit lanes");
+ 
+ __device__
+ inline  __attribute((always_inline))
+diff --git a/projects/rccl/tools/rccl-prim-test/copy_kernel.h b/projects/rccl/tools/rccl-prim-test/copy_kernel.h
+index 7fe4ba63cbc6b8212dba8535c84efbf3d1417f94..2ea9da0519eae4d8957bb105472c3eff3e392ad0 100644
+--- a/projects/rccl/tools/rccl-prim-test/copy_kernel.h
++++ b/projects/rccl/tools/rccl-prim-test/copy_kernel.h
+@@ -74,7 +74,9 @@ struct MULTI<FUNC, float> {
+ };
+ 
+ 
+-typedef ulong2 Pack128;
++typedef ulonglong2 Pack128;
++static_assert(sizeof(Pack128) == 16 && sizeof(Pack128{}.x) == 8,
++              "Pack128 requires two 64-bit lanes");
+ 
+ template<class FUNC, typename T>
+ struct MULTI128 {
+

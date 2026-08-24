@@ -15,6 +15,13 @@ HIP_STREAM_WAIT_VALUE_GTE = 0
 HIP_STREAM_NON_BLOCKING = 1
 HIP_FULL_MASK = 0xFFFFFFFF
 HIP_DEVICE_ATTRIBUTE_CAN_USE_STREAM_WAIT_VALUE = 10013
+HIP_IPC_MEM_LAZY_ENABLE_PEER_ACCESS = 1
+
+
+class HipIpcMemHandle(ctypes.Structure):
+    """ABI-compatible storage for hipIpcMemHandle_t."""
+
+    _fields_ = [("reserved", ctypes.c_char * 64)]
 
 
 class HipRuntime:
@@ -74,12 +81,36 @@ class HipRuntime:
         self.library.hipStreamWaitValue32.restype = ctypes.c_int
         self.library.hipStreamSynchronize.argtypes = [ctypes.c_void_p]
         self.library.hipStreamSynchronize.restype = ctypes.c_int
+        self.library.hipDeviceSynchronize.argtypes = []
+        self.library.hipDeviceSynchronize.restype = ctypes.c_int
         self.library.hipDeviceGetAttribute.argtypes = [
             ctypes.POINTER(ctypes.c_int),
             ctypes.c_int,
             ctypes.c_int,
         ]
         self.library.hipDeviceGetAttribute.restype = ctypes.c_int
+        self.library.hipSetDevice.argtypes = [ctypes.c_int]
+        self.library.hipSetDevice.restype = ctypes.c_int
+        self.library.hipMalloc.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_size_t,
+        ]
+        self.library.hipMalloc.restype = ctypes.c_int
+        self.library.hipFree.argtypes = [ctypes.c_void_p]
+        self.library.hipFree.restype = ctypes.c_int
+        self.library.hipIpcGetMemHandle.argtypes = [
+            ctypes.POINTER(HipIpcMemHandle),
+            ctypes.c_void_p,
+        ]
+        self.library.hipIpcGetMemHandle.restype = ctypes.c_int
+        self.library.hipIpcOpenMemHandle.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            HipIpcMemHandle,
+            ctypes.c_uint,
+        ]
+        self.library.hipIpcOpenMemHandle.restype = ctypes.c_int
+        self.library.hipIpcCloseMemHandle.argtypes = [ctypes.c_void_p]
+        self.library.hipIpcCloseMemHandle.restype = ctypes.c_int
         self.library.hipGetErrorString.argtypes = [ctypes.c_int]
         self.library.hipGetErrorString.restype = ctypes.c_char_p
 
@@ -176,6 +207,9 @@ class HipRuntime:
             "hipStreamSynchronize",
         )
 
+    def device_synchronize(self) -> None:
+        self.check(self.library.hipDeviceSynchronize(), "hipDeviceSynchronize")
+
     def can_use_stream_wait_value(self, device: int) -> bool:
         supported = ctypes.c_int()
         self.check(
@@ -187,3 +221,51 @@ class HipRuntime:
             "hipDeviceGetAttribute(CanUseStreamWaitValue)",
         )
         return bool(supported.value)
+
+    def set_device(self, device: int) -> None:
+        self.check(self.library.hipSetDevice(device), "hipSetDevice")
+
+    def malloc(self, size: int) -> int:
+        pointer = ctypes.c_void_p()
+        self.check(self.library.hipMalloc(ctypes.byref(pointer), size), "hipMalloc")
+        if pointer.value is None:
+            raise RuntimeError("hipMalloc returned a null pointer")
+        return int(pointer.value)
+
+    def free(self, pointer: int) -> None:
+        self.check(self.library.hipFree(ctypes.c_void_p(pointer)), "hipFree")
+
+    def ipc_get_mem_handle(self, device_pointer: int) -> bytes:
+        handle = HipIpcMemHandle()
+        self.check(
+            self.library.hipIpcGetMemHandle(
+                ctypes.byref(handle), ctypes.c_void_p(device_pointer)
+            ),
+            "hipIpcGetMemHandle",
+        )
+        return bytes(handle)
+
+    def ipc_open_mem_handle(self, handle_bytes: bytes) -> int:
+        if len(handle_bytes) != ctypes.sizeof(HipIpcMemHandle):
+            raise ValueError(
+                f"HIP IPC handle must be {ctypes.sizeof(HipIpcMemHandle)} bytes"
+            )
+        handle = HipIpcMemHandle.from_buffer_copy(handle_bytes)
+        pointer = ctypes.c_void_p()
+        self.check(
+            self.library.hipIpcOpenMemHandle(
+                ctypes.byref(pointer),
+                handle,
+                HIP_IPC_MEM_LAZY_ENABLE_PEER_ACCESS,
+            ),
+            "hipIpcOpenMemHandle",
+        )
+        if pointer.value is None:
+            raise RuntimeError("hipIpcOpenMemHandle returned a null pointer")
+        return int(pointer.value)
+
+    def ipc_close_mem_handle(self, device_pointer: int) -> None:
+        self.check(
+            self.library.hipIpcCloseMemHandle(ctypes.c_void_p(device_pointer)),
+            "hipIpcCloseMemHandle",
+        )

@@ -15,7 +15,7 @@ and the enqueue path dereferences it. Compiling that source and adding a null
 check would close the crash, but Gloo would still be a host-staged transport,
 not an AMD GPU collective library.
 
-## RCCL gap
+## Native Windows RCCL status
 
 - TheRock's Windows support matrix marks RCCL unsupported:
   <https://github.com/ROCm/TheRock/blob/main/docs/development/windows_support.md>
@@ -24,12 +24,34 @@ not an AMD GPU collective library.
 - The Radeon AI PRO R9700 also has a currently tracked RCCL issue on Linux:
   <https://github.com/ROCm/rccl/issues/5480>
 
-A Windows RCCL effort would need more than a compiler switch. It must replace
-or port Linux/HSA process, shared-memory, topology, device-discovery, and build
-assumptions; establish Windows multi-process bootstrap; validate kernels on
-`gfx1201`; and then integrate with PyTorch c10d. This remains worthwhile, but
-it is an upstream-scale project rather than a prerequisite for proving useful
-vLLM tensor parallelism.
+The pinned AMD Windows wheel train does not ship RCCL. This repository now
+ports the pinned RCCL 2.30.7 source to a native Windows DLL, establishes
+multi-process bootstrap through Gloo, validates collective kernels on
+`gfx1201`, and integrates the data plane directly into vLLM. It does not patch
+the user's vLLM checkout or claim that PyTorch c10d gained an RCCL backend.
+
+The current driver exposes neither HIP peer access nor cross-device HIP IPC,
+so the validated RCCL topology uses NET/Socket through system memory. The next
+upstream boundary is a Windows driver/runtime mechanism for importing
+cross-adapter device-backed memory. D3D12 and Vulkan external-memory probes are
+included to test that boundary explicitly.
+
+## D3D12 and Vulkan external-memory status
+
+D3D12 cross-adapter heaps and fences work on the reference GPUs in one process
+and across the two vLLM worker processes. HIP can import each D3D12 heap and
+fence on both GPUs. That enables the validated GPU-driven AllReduce fast path,
+but Microsoft specifies cross-adapter heaps as system-memory allocations on
+discrete adapters rather than VRAM P2P:
+
+- D3D12 shared heaps and cross-adapter restrictions:
+  <https://learn.microsoft.com/en-us/windows/win32/direct3d12/shared-heaps>
+- D3D12 `D3D12_MEMORY_POOL_L0` definition:
+  <https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_memory_pool>
+
+Vulkan external-memory import succeeds on the owning GPU but not the peer GPU
+with the pinned driver. Re-Size BAR and Above-4G decoding remain useful platform
+settings, but they do not override the driver/runtime peer-access capability.
 
 ## HIP primitives used by this prototype
 

@@ -4,7 +4,9 @@ param(
     [int]$TensorParallelSize = 2,
     [int]$MaxModelLen = 256,
     [int]$InputLen = 8,
-    [int]$OutputLen = 1
+    [int]$OutputLen = 1,
+    [bool]$UseRccl = $true,
+    [bool]$UseD3D12 = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +22,10 @@ $env:VLLM_WORKER_MULTIPROC_METHOD = "spawn"
 $env:VLLM_USE_V2_MODEL_RUNNER = "0"
 $env:VLLM_DISTRIBUTED_USE_SPLIT_GROUP = "0"
 $env:WAVMG_ENABLE = "1"
+$env:WAVMG_USE_RCCL = if ($UseRccl -and $TensorParallelSize -eq 2) { "1" } else { "0" }
+$env:WAVMG_RCCL_DLL = Join-Path $ProjectRoot "build\rccl-windows\rccl.dll"
+$env:WAVMG_USE_D3D12 = if ($UseD3D12 -and $TensorParallelSize -eq 2) { "1" } else { "0" }
+$env:WAVMG_D3D12_DLL = Join-Path $ProjectRoot "build\native\wavmg_d3d12_v1.dll"
 $env:VLLM_PLUGINS = "windows_amd_multigpu"
 $env:HF_HUB_OFFLINE = "1"
 

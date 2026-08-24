@@ -26,6 +26,7 @@ set "ROCM_ROOT_FWD=%ROCM_ROOT:\=/%"
 set "ROCM_PATH=%ROCM_ROOT_FWD%"
 set "HIP_PATH=%ROCM_ROOT_FWD%"
 set "PATH=%ROCM_ROOT%\bin;%ROCM_ROOT%\lib\llvm\bin;%VENV%\Scripts;%PATH%"
+if not defined VULKAN_SDK set "VULKAN_SDK=C:\VulkanSDK\1.4.350.0"
 
 "%CMAKE%" ^
   -S "%PROJECT_ROOT%\native" ^

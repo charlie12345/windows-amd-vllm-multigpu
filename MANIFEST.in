@@ -1,0 +1,13 @@
+include LICENSE
+include NOTICE
+recursive-include LICENSES *
+recursive-include cmake *
+recursive-include docs *
+recursive-include native *
+recursive-include patches *
+recursive-include pins *
+recursive-include probes *
+recursive-include scripts *
+recursive-include tools *
+global-exclude *.py[cod]
+prune probes/__pycache__

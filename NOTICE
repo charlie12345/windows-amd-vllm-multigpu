@@ -1,0 +1,25 @@
+Windows AMD vLLM Multi-GPU
+
+Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This project contains compatibility patches and integration code for vLLM,
+which is licensed under the Apache License, Version 2.0:
+https://github.com/vllm-project/vllm
+
+The optional native RCCL build is based on AMD RCCL and NVIDIA NCCL source.
+RCCL/NCCL-derived source patches and binaries remain subject to their
+upstream BSD-3-Clause terms and notices. See LICENSES/RCCL-LICENSE.txt and
+LICENSES/RCCL-NOTICES.txt. Exact copies from the pinned upstream checkout are
+also provided as LICENSES/RCCL-UPSTREAM-LICENSE.txt,
+LICENSES/RCCL-UPSTREAM-NOTICES.txt, and
+LICENSES/RCCL-UPSTREAM-ThirdPartyNotices.txt.
+
+RCCL also contains NVTX code under Apache-2.0 WITH LLVM-exception and latency
+profiler/ncclCommDump code under the MIT License. Those upstream notices are
+reproduced in LICENSES/RCCL-NOTICES.txt.
+
+ROCm, HIP, PyTorch, Vulkan, the Windows SDK, model weights, and other external
+dependencies are separate works distributed under their respective terms.
+They are not relicensed by this repository's Apache-2.0 license.
