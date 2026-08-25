@@ -12,6 +12,8 @@
   "gpu_arch": "gfx1201",
   "rocm_systems_repo": "https://github.com/ROCm/rocm-systems.git",
   "rocm_systems_commit": "ee3bae9a931561506c49dcf82fca52ec4711c34f",
+  "hip_runtime_rocm_systems_commit": "44be71b52284948e58c93f65f46910399773fdcd",
+  "hip_runtime_therock_commit": "fe040db029d8a319ee445b24ece0ad3d040a22ee",
   "rccl_version": "2.30.7",
   "hipify_repo": "https://github.com/ROCm/HIPIFY.git",
   "hipify_commit": "f1af27c6e0c43e1a9663dc3650dcff54f980e6a6",
@@ -26,6 +28,10 @@
   "bf16_baseline_model": "mistralai/Mistral-Small-24B-Instruct-2501",
   "bf16_baseline_model_revision": "9527884be6e5616bdd54de542f9ae13384489724",
   "bf16_baseline_model_weight_bytes": 47144848872,
+  "qwen38_bf16_trial_model": "Qwen/Qwen3.8-27B",
+  "qwen38_bf16_trial_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "qwen38_bf16_trial_license": "apache-2.0",
+  "qwen38_bf16_trial_weight_bytes": 55563006776,
   "therock_reference_commit": "89553ce3746eda74ade42557470d25e37c91b6f0",
   "therock_gloo_enable_commit": "3e01a5224a3d5a2ce1c6d2d4f91a15478e2d7ba5"
 }

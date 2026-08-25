@@ -19,6 +19,54 @@ NCCL/RCCL backend. This repository's `ctypes` adapter loads the separately
 built native `rccl.dll`. Two GPUs are visible and peer access is false in both
 directions.
 
+## Windows HIP/PAL peer-VRAM experiment
+
+An isolated `amdhip64_7.dll` was built from the exact ROCm source commit
+`44be71b52284948e58c93f65f46910399773fdcd`, matching the installed TheRock
+wheel manifest. The build used AMD's documented public Windows CLR/PAL path;
+its output stayed under `build/hip-p2p-runtime` and never replaced the working
+wheel runtime.
+
+The default runtime and the isolated runtime with the experimental flag off
+both reported `hipDeviceCanAccessPeer=false` in both directions. Peer enable
+returned HIP 101. `hipMemcpyPeer` still returned correct data because PAL has
+an explicit two-step, 4 MiB host-staging fallback; copy correctness alone was
+therefore not accepted as P2P evidence.
+
+The opt-in `GPU_FORCE_P2P_COMPAT=1` patch bypassed only the cached PAL
+compatibility result. HIP then reported capability and peer enable as success,
+but PAL's attempt to open peer GPU memory logged `Video memory allocation
+failed`. A second patch made this mode fail closed instead of entering the
+staging fallback. Both directions then produced incorrect destination bytes,
+as expected when no peer resource exists. This disproves the apparent success
+from capability and enable alone.
+
+Cross-process IPC supplied the decisive control:
+
+| Exporter | Importer | Export | Import | Correct data |
+| --- | --- | --- | --- | --- |
+| GPU 0 | GPU 0 | pass | pass | yes |
+| GPU 0 | GPU 1 | pass | HIP 17 | no |
+
+The same-device pass proves that the NT-handle exchange and probe are valid.
+The cross-device path fails when WDDM queries the GPU-0 resource using GPU 1's
+device handle; the translated driver result is error 9/
+`STATUS_INVALID_PARAMETER`. Peer GPU-VA mapping is never reached.
+
+Topology and BAR evidence on the same machine:
+
+- GPU 0 is under `PCIROOT(20)` and GPU 1 under `PCIROOT(C0)`;
+- both endpoints negotiate PCIe Gen5 x16;
+- HIP reports `isLargeBar: 0` and an empty peer list for both GPUs; and
+- Windows exposes a 256 MiB high MMIO aperture, not a full 31.86 GiB VRAM BAR,
+  for each adapter.
+
+Conclusion: true peer-VRAM DMA is not available on this driver/GPU/topology.
+The open HIP front end can be patched and rebuilt, but the present AMD Windows
+PAL/KMD rejects the required cross-adapter local-memory object. The working
+production path remains real TP2 with RCCL plus the D3D12 L0/system-memory
+transport; it must not be described as direct VRAM P2P.
+
 ## Correctness
 
 Two-rank probes pass CPU Gloo all-reduce; native FP32, FP16, and BF16
@@ -162,6 +210,34 @@ boundaries while their eager implementations continue to call the native RCCL
 or D3D12 transport. The pinned vLLM nightly also requires
 `--compilation-config '{"compile_sizes":[]}'` to enable dynamic-range lookup;
 otherwise its piecewise backend rejects a valid 512-token shape.
+
+## Qwen3.8-27B BF16 format trial
+
+`Qwen/Qwen3.8-27B` revision
+`1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` contains 18 BF16 weight shards
+totaling 55,563,006,776 bytes (51.75 GiB). The model resolved to
+`Qwen3_5ForConditionalGeneration` and ran with multimodal inputs disabled.
+Each TP worker loaded 25.24 GiB of model memory, proving the checkpoint was
+sharded because neither 31.86 GiB GPU can hold the full checkpoint.
+
+All runs used 32 input and 32 output tokens, BF16, automatic `ROCM_ATTN`, no
+prefix cache, a 512-token model limit, and 92% GPU-memory utilization.
+
+| Batch | Configuration | Average | p50 | p90 | Output tokens/s |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | TP2 D3D12 + RCCL eager/O0 | 11.0946 s | 11.0987 s | 11.1249 s | 2.88 |
+| 1 | TP2 RCCL eager/O0 | 10.5343 s | 10.4008 s | 10.8281 s | 3.04 |
+| 1 | TP2 RCCL async + O1 | 10.2798 s | 10.2957 s | 10.3629 s | 3.11 |
+| 1 | TP2 RCCL async eager + one-token MTP | 10.8185 s | 10.9276 s | 11.4470 s | 2.96 |
+| 8 | TP2 RCCL async eager | 28.0533 s | 28.0294 s | 28.7700 s | 9.13 aggregate |
+
+RCCL-only won for this workload. O1 plus async scheduling was the best tested
+batch-1 profile, while the built-in MTP draft layer lost performance. The
+ordinary O1 graph took 428.98 seconds to compile on its first launch. The
+O1+MTP graph was not measured because its independent artifact exhausted the
+remaining disk while being saved; eager MTP completed normally. The downloaded
+BF16 checkpoint was removed after the trial, as required by the sequential
+BF16, FP8, and 4-bit test plan.
 
 ## Historical BF16 large-model TP2 validation
 

@@ -36,6 +36,72 @@ IPC. RCCL consequently selects its NET/Socket transport. D3D12 cross-adapter
 heaps work, but Microsoft specifies them as L0/system-memory allocations on
 discrete adapters.
 
+## Experimental HIP/PAL peer-VRAM probe
+
+This repository now contains a separate, version-locked build of AMD's Windows
+HIP/CLR runtime. It does **not** replace the ROCm wheel's `amdhip64_7.dll`, and
+it does not alter `C:\AI\vllm`. The patch adds an opt-in capability-gate probe
+and, critically, disables PAL's staged-copy fallback while that probe is active.
+That makes a failed peer-VRAM mapping observable instead of allowing a correct
+host-staged copy to masquerade as direct P2P.
+
+The probe is diagnostic, not a production runtime. On the validated pair of
+R9700s and AMD driver `32.0.31035.1003`:
+
+| Test | Result |
+| --- | --- |
+| Unmodified PAL capability, GPU 0 to 1 and 1 to 0 | `false`; enable returns HIP 101 |
+| Forced PAL capability gate | capability and enable return success |
+| Fail-closed PAL peer-resource creation | fails; PAL logs `Video memory allocation failed` |
+| Same-GPU cross-process IPC, GPU 0 to GPU 0 | passes with correct bytes |
+| Cross-GPU IPC, GPU 0 to GPU 1 | fails at import with HIP 17 |
+| Direct VRAM P2P DMA proven | **no** |
+
+The same-GPU IPC control proves that handle duplication and the IPC test itself
+work. The cross-GPU import reaches Windows WDDM but the importing GPU's
+`D3DKMTQueryResourceInfoFromNtHandle` is rejected with
+`STATUS_INVALID_PARAMETER`. The two GPUs also enumerate under separate PCIe
+root-complex branches, and HIP reports no Large BAR. These results put the
+remaining boundary in AMD PAL/KMD (`amdkmdag.sys`), where peer allocation,
+page-table mapping, residency, and coherency are owned. A user-mode HIP or RCCL
+patch cannot safely grant those kernel-driver capabilities.
+
+Reproduce the isolated build and tests:
+
+```powershell
+# First run prepares the exact sparse checkout and stops at the AMD interop EULA.
+.\scripts\sync-hip-p2p-runtime.ps1
+Get-Content .\sandbox\rocm-systems-hip-p2p\shared\amdgpu-windows-interop\LICENSE
+
+# Continue only after personally accepting those upstream binary terms.
+.\scripts\sync-hip-p2p-runtime.ps1 -AcceptAmdInteropEula
+.\scripts\apply-hip-p2p-patches.ps1
+.\scripts\build-hip-p2p-runtime.ps1 -Jobs 4
+
+$Runtime = '.\build\hip-p2p-runtime\install\bin\amdhip64_7.dll'
+$RocmBin = (& .\.venv-vllm\Scripts\python.exe -m rocm_sdk path --bin).Trim()
+.\scripts\probe-hip-peer-access.ps1 `
+    -HipRuntimeDll $Runtime `
+    -DependencyDirectory $RocmBin `
+    -ForcePalPeerProbe
+
+$env:PYTHONPATH = '.\src'
+$env:GPU_FORCE_P2P_COMPAT = '1'
+.\.venv-vllm\Scripts\python.exe .\probes\hip_ipc_probe.py `
+    --runtime-dll $Runtime --dependency-dir $RocmBin `
+    --export-device 0 --import-device 0
+.\.venv-vllm\Scripts\python.exe .\probes\hip_ipc_probe.py `
+    --runtime-dll $Runtime --dependency-dir $RocmBin `
+    --export-device 0 --import-device 1
+```
+
+The expected forced peer-access probe currently exits nonzero because the
+fail-closed copy is deliberately incorrect after PAL rejects both peer
+mappings. Never copy the experimental DLL over the wheel or system runtime.
+The build output is ignored by Git and is not redistributed because AMD's
+prebuilt Windows PAL/WKMI objects have separate binary terms. See `NOTICE` and
+`LICENSES/ROCM-SYSTEMS-CLR-MIT.txt`.
+
 ## How the hybrid AllReduce works
 
 For every supported two-rank AllReduce, each worker enqueues this sequence on
@@ -254,6 +320,51 @@ tuned TP2 was still 10.2% faster. Use TP1 when the model fits and minimum
 single-request latency is the only objective; use TP2 for concurrency, larger
 KV cache, models that do not fit one GPU, or the measured batch-throughput
 gain.
+
+### Qwen3.8-27B BF16 format trial
+
+The Apache-2.0 [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B)
+checkpoint was tested at revision
+`1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`. Its 18 weight shards total
+55,563,006,776 bytes (51.75 GiB), so the BF16 model cannot fit on either
+31.86 GiB R9700 by itself. TP2 loaded 25.24 GiB of model memory per worker,
+which directly verifies that vLLM sharded the model across the two GPUs.
+
+These text-only runs used `--language-model-only`, 32 input tokens, 32 output
+tokens, automatic `ROCM_ATTN`, no prefix cache, and a 512-token model limit.
+The model's GDN linear-attention prefill and recurrent-decode kernels used the
+Triton/FLA path.
+
+| Batch | Configuration | Average | p50 | p90 | Output tokens/s |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | TP2 D3D12 + RCCL eager/O0 | 11.0946 s | 11.0987 s | 11.1249 s | 2.88 |
+| 1 | TP2 RCCL eager/O0 | 10.5343 s | 10.4008 s | 10.8281 s | 3.04 |
+| 1 | TP2 RCCL async + O1 | 10.2798 s | 10.2957 s | 10.3629 s | **3.11** |
+| 1 | TP2 RCCL async eager + one-token MTP | 10.8185 s | 10.9276 s | 11.4470 s | 2.96 |
+| 8 | TP2 RCCL async eager | 28.0533 s | 28.0294 s | 28.7700 s | **9.13 aggregate** |
+
+RCCL-only was 5.5% faster than the hybrid at batch 1, and async scheduling
+plus O1 improved the hybrid baseline by 8.0%. Qwen's built-in one-token MTP
+speculative decoder was 4.8% slower than the winning ordinary decode profile
+on this random-token latency workload. The first O1 launch required 429
+seconds to compile and cache the 64-layer graph; that startup cost is excluded
+from the steady-state table. An O1+MTP compile was not benchmarked because its
+separate AOT artifact exhausted the remaining disk during the trial.
+
+Reproduce a format trial with:
+
+```powershell
+.\scripts\benchmark-qwen38-27b.ps1 `
+    -ModelPath C:\path\to\Qwen3.8-27B `
+    -ModelLabel bf16 `
+    -Transport Rccl `
+    -Profile TunedO1 `
+    -BatchSize 1
+```
+
+The BF16 checkpoint was deleted after recording the results. It is not
+distributed by this repository and can be restored only by downloading the
+pinned Hugging Face revision again.
 
 ### Decode-related vLLM flags
 

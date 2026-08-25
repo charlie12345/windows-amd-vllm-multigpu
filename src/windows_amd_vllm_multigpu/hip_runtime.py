@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import ctypes
 import os
+from collections.abc import Iterable
 from pathlib import Path
-
 
 HIP_MEMCPY_HOST_TO_DEVICE = 1
 HIP_MEMCPY_DEVICE_TO_HOST = 2
@@ -25,16 +25,40 @@ class HipIpcMemHandle(ctypes.Structure):
 
 
 class HipRuntime:
-    def __init__(self) -> None:
-        import torch
+    def __init__(
+        self,
+        runtime_path: str | Path | None = None,
+        dependency_dirs: Iterable[str | Path] = (),
+    ) -> None:
+        if runtime_path is None:
+            import torch
 
-        site_packages = Path(torch.__file__).resolve().parent.parent
-        runtime_dir = site_packages / "_rocm_sdk_devel" / "bin"
-        runtime_path = runtime_dir / "amdhip64_7.dll"
-        if not runtime_path.is_file():
-            raise FileNotFoundError(f"HIP runtime was not found at {runtime_path}")
-        self._dll_directory = os.add_dll_directory(str(runtime_dir))
-        self.library = ctypes.WinDLL(str(runtime_path))
+            site_packages = Path(torch.__file__).resolve().parent.parent
+            resolved_runtime_path = (
+                site_packages / "_rocm_sdk_devel" / "bin" / "amdhip64_7.dll"
+            )
+        else:
+            resolved_runtime_path = Path(runtime_path).expanduser().resolve()
+
+        if not resolved_runtime_path.is_file():
+            raise FileNotFoundError(
+                f"HIP runtime was not found at {resolved_runtime_path}"
+            )
+
+        dll_directories = [resolved_runtime_path.parent]
+        dll_directories.extend(
+            Path(directory).expanduser().resolve() for directory in dependency_dirs
+        )
+        self._dll_directories = []
+        for directory in dict.fromkeys(dll_directories):
+            if not directory.is_dir():
+                raise FileNotFoundError(
+                    f"DLL dependency directory was not found: {directory}"
+                )
+            self._dll_directories.append(os.add_dll_directory(str(directory)))
+
+        self.runtime_path = resolved_runtime_path
+        self.library = ctypes.WinDLL(str(resolved_runtime_path))
         self.library.hipHostRegister.argtypes = [
             ctypes.c_void_p,
             ctypes.c_size_t,
@@ -89,6 +113,21 @@ class HipRuntime:
             ctypes.c_int,
         ]
         self.library.hipDeviceGetAttribute.restype = ctypes.c_int
+        self.library.hipGetDeviceCount.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        self.library.hipGetDeviceCount.restype = ctypes.c_int
+        self.library.hipDeviceCanAccessPeer.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        self.library.hipDeviceCanAccessPeer.restype = ctypes.c_int
+        self.library.hipDeviceEnablePeerAccess.argtypes = [
+            ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        self.library.hipDeviceEnablePeerAccess.restype = ctypes.c_int
+        self.library.hipDeviceDisablePeerAccess.argtypes = [ctypes.c_int]
+        self.library.hipDeviceDisablePeerAccess.restype = ctypes.c_int
         self.library.hipSetDevice.argtypes = [ctypes.c_int]
         self.library.hipSetDevice.restype = ctypes.c_int
         self.library.hipMalloc.argtypes = [
@@ -98,6 +137,23 @@ class HipRuntime:
         self.library.hipMalloc.restype = ctypes.c_int
         self.library.hipFree.argtypes = [ctypes.c_void_p]
         self.library.hipFree.restype = ctypes.c_int
+        self.library.hipMemcpyPeer.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_size_t,
+        ]
+        self.library.hipMemcpyPeer.restype = ctypes.c_int
+        self.library.hipMemcpyPeerAsync.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+        ]
+        self.library.hipMemcpyPeerAsync.restype = ctypes.c_int
         self.library.hipIpcGetMemHandle.argtypes = [
             ctypes.POINTER(HipIpcMemHandle),
             ctypes.c_void_p,
@@ -113,12 +169,26 @@ class HipRuntime:
         self.library.hipIpcCloseMemHandle.restype = ctypes.c_int
         self.library.hipGetErrorString.argtypes = [ctypes.c_int]
         self.library.hipGetErrorString.restype = ctypes.c_char_p
+        self.library.hipRuntimeGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        self.library.hipRuntimeGetVersion.restype = ctypes.c_int
 
     def check(self, code: int, operation: str) -> None:
         if code:
-            message = self.library.hipGetErrorString(code)
-            decoded = message.decode("utf-8", errors="replace") if message else "unknown"
-            raise RuntimeError(f"{operation} failed: HIP {code} ({decoded})")
+            raise RuntimeError(
+                f"{operation} failed: HIP {code} ({self.error_string(code)})"
+            )
+
+    def error_string(self, code: int) -> str:
+        message = self.library.hipGetErrorString(code)
+        return message.decode("utf-8", errors="replace") if message else "unknown"
+
+    def runtime_version(self) -> int:
+        version = ctypes.c_int()
+        self.check(
+            self.library.hipRuntimeGetVersion(ctypes.byref(version)),
+            "hipRuntimeGetVersion",
+        )
+        return int(version.value)
 
     def host_register(self, pointer: int, size: int, flags: int = 0) -> None:
         self.check(
@@ -187,9 +257,7 @@ class HipRuntime:
             "hipStreamWriteValue32",
         )
 
-    def stream_wait_value32(
-        self, stream: int, device_pointer: int, value: int
-    ) -> None:
+    def stream_wait_value32(self, stream: int, device_pointer: int, value: int) -> None:
         self.check(
             self.library.hipStreamWaitValue32(
                 ctypes.c_void_p(stream),
@@ -222,6 +290,36 @@ class HipRuntime:
         )
         return bool(supported.value)
 
+    def get_device_count(self) -> int:
+        count = ctypes.c_int()
+        self.check(
+            self.library.hipGetDeviceCount(ctypes.byref(count)),
+            "hipGetDeviceCount",
+        )
+        return int(count.value)
+
+    def device_can_access_peer(self, device: int, peer_device: int) -> bool:
+        supported = ctypes.c_int()
+        self.check(
+            self.library.hipDeviceCanAccessPeer(
+                ctypes.byref(supported), device, peer_device
+            ),
+            "hipDeviceCanAccessPeer",
+        )
+        return bool(supported.value)
+
+    def device_enable_peer_access(self, peer_device: int) -> None:
+        self.check(
+            self.library.hipDeviceEnablePeerAccess(peer_device, 0),
+            "hipDeviceEnablePeerAccess",
+        )
+
+    def device_disable_peer_access(self, peer_device: int) -> None:
+        self.check(
+            self.library.hipDeviceDisablePeerAccess(peer_device),
+            "hipDeviceDisablePeerAccess",
+        )
+
     def set_device(self, device: int) -> None:
         self.check(self.library.hipSetDevice(device), "hipSetDevice")
 
@@ -234,6 +332,46 @@ class HipRuntime:
 
     def free(self, pointer: int) -> None:
         self.check(self.library.hipFree(ctypes.c_void_p(pointer)), "hipFree")
+
+    def memcpy_peer(
+        self,
+        destination: int,
+        destination_device: int,
+        source: int,
+        source_device: int,
+        size: int,
+    ) -> None:
+        self.check(
+            self.library.hipMemcpyPeer(
+                ctypes.c_void_p(destination),
+                destination_device,
+                ctypes.c_void_p(source),
+                source_device,
+                size,
+            ),
+            "hipMemcpyPeer",
+        )
+
+    def memcpy_peer_async(
+        self,
+        destination: int,
+        destination_device: int,
+        source: int,
+        source_device: int,
+        size: int,
+        stream: int,
+    ) -> None:
+        self.check(
+            self.library.hipMemcpyPeerAsync(
+                ctypes.c_void_p(destination),
+                destination_device,
+                ctypes.c_void_p(source),
+                source_device,
+                size,
+                ctypes.c_void_p(stream),
+            ),
+            "hipMemcpyPeerAsync",
+        )
 
     def ipc_get_mem_handle(self, device_pointer: int) -> bytes:
         handle = HipIpcMemHandle()

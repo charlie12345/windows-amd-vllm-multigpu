@@ -1,0 +1,65 @@
+diff --git a/projects/clr/rocclr/device/pal/paldevice.cpp b/projects/clr/rocclr/device/pal/paldevice.cpp
+index 6a9dc1a8da..07f7cd2c5d 100644
+--- a/projects/clr/rocclr/device/pal/paldevice.cpp
++++ b/projects/clr/rocclr/device/pal/paldevice.cpp
+@@ -1402,8 +1402,16 @@ bool Device::init() {
+               ->iDev()
+               ->GetMultiGpuCompatibility(*static_cast<Device*>(devices()[device1])->iDev(),
+                                          &comp_info);
++          const bool pal_reports_peer_access =
++              comp_info.flags.peerTransferRead && comp_info.flags.peerTransferWrite;
++          const bool force_peer_probe = GPU_FORCE_P2P_COMPAT;
+           // Check P2P capability
+-          if (comp_info.flags.peerTransferRead && comp_info.flags.peerTransferWrite) {
++          if (pal_reports_peer_access || force_peer_probe) {
++            if (!pal_reports_peer_access) {
++              LogWarning(
++                  "WAVMG experimental probe is bypassing PAL's P2P compatibility result; "
++                  "the driver may still reject peer allocations");
++            }
+             devices()[device0]->p2pDevices_.push_back(as_cl(devices()[device1]));
+             devices()[device1]->p2p_access_devices_.push_back(devices()[device0]);
+           }
+diff --git a/projects/clr/rocclr/utils/flags.hpp b/projects/clr/rocclr/utils/flags.hpp
+index 78995bdc21..2176924d42 100644
+--- a/projects/clr/rocclr/utils/flags.hpp
++++ b/projects/clr/rocclr/utils/flags.hpp
+@@ -135,6 +135,10 @@ release(bool, GPU_ENABLE_WAVE32_MODE, true,
+         "Enables Wave32 compilation in HW if available")                      \
+ release(bool, GPU_ENABLE_HW_P2P, false,                                       \
+         "Enables HW P2P path")                                                \
++release(bool, GPU_FORCE_P2P_COMPAT, false,                                    \
++        "Experimental PAL-only probe: bypass the multi-GPU compatibility "    \
++        "result and attempt peer allocation creation; may be rejected by "    \
++        "the driver")                                                        \
+ release(bool, GPU_ENABLE_COOP_GROUPS, true,                                   \
+          "Enables cooperative group launch")                                  \
+ release(uint, GPU_MAX_COMMAND_BUFFERS, 8,                                     \
+diff --git a/projects/clr/rocclr/device/pal/palvirtual.cpp b/projects/clr/rocclr/device/pal/palvirtual.cpp
+index 35dfc923a5..bb272b2136 100644
+--- a/projects/clr/rocclr/device/pal/palvirtual.cpp
++++ b/projects/clr/rocclr/device/pal/palvirtual.cpp
+@@ -19,6 +19,7 @@
+ #include "device/pal/palblit.hpp"
+ #include "device/appprofile.hpp"
+ #include "device/devhostcall.hpp"
++#include "utils/flags.hpp"
+ #include "hsa.h"
+ #include "amd_hsa_kernel_code.h"
+ #include "amd_hsa_queue.h"
+@@ -1950,6 +1951,15 @@ void VirtualGPU::submitCopyMemoryP2P(amd::CopyMemoryP2PCommand& cmd) {
+     p2pAllowed = false;
+   }
+ 
++  if (GPU_FORCE_P2P_COMPAT && !p2pAllowed) {
++    LogError(
++        "WAVMG forced peer probe could not create PAL peer VRAM mappings; "
++        "refusing the staged fallback");
++    cmd.setStatus(CL_OUT_OF_RESOURCES);
++    profilingEnd(cmd);
++    return;
++  }
++
+   // Synchronize source and destination memory
+   device::Memory::SyncFlags syncFlags;
+   syncFlags.skipEntire_ = cmd.isEntireMemory();

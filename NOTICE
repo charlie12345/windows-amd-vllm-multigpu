@@ -28,9 +28,27 @@ ROCm, HIP, PyTorch, Vulkan, the Windows SDK, model weights, and other external
 dependencies are separate works distributed under their respective terms.
 They are not relicensed by this repository's Apache-2.0 license.
 
+The experimental HIP/PAL build patch modifies MIT-licensed AMD CLR source at
+rocm-systems commit 44be71b52284948e58c93f65f46910399773fdcd. The applicable
+MIT notice is reproduced in LICENSES/ROCM-SYSTEMS-CLR-MIT.txt. The build also
+uses ROCr source under its upstream licenses.
+
+AMD's public Windows interop checkout obtains prebuilt PAL/WKMI libraries with
+DVC. Those objects are governed by the AMD Software End User License Agreement
+stored upstream at shared/amdgpu-windows-interop/LICENSE. They are downloaded
+only after explicit acceptance, remain in ignored build/source directories,
+and are not distributed by this repository. Do not redistribute an
+experimental amdhip64_7.dll without independently satisfying every applicable
+AMD and third-party binary-license term.
+
 The optional current test weights are the AWQ quantization published as
 stelterlab/Mistral-Small-24B-Instruct-2501-AWQ, derived from Mistral Small 24B.
 The model card declares Apache-2.0. The exact quantized revision and the
 historical Mistral BF16 baseline revision are recorded in
 pins/nightly-2026-07-28.json. Model weights are downloaded directly from
 Hugging Face and are not distributed by this repository.
+
+The Qwen3.8-27B BF16 benchmark used Qwen/Qwen3.8-27B revision
+1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0. Its model card declares
+Apache-2.0. Those weights were deleted after the benchmark and are not
+distributed by this repository.
