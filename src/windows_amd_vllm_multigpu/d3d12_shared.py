@@ -8,6 +8,8 @@ from pathlib import Path
 
 import torch
 
+from .runtime_paths import rocm_bin_directories
+
 
 class D3D12SharedBuffer:
     """One named cross-adapter heap and timeline fence mapped into HIP."""
@@ -39,9 +41,11 @@ class D3D12SharedBuffer:
                 "run scripts\\build-native.cmd"
             )
 
-        site_packages = Path(torch.__file__).resolve().parent.parent
-        runtime_dir = site_packages / "_rocm_sdk_devel" / "bin"
-        self._dll_directory = os.add_dll_directory(str(runtime_dir))
+        self._dll_directories = [
+            os.add_dll_directory(str(directory))
+            for directory in rocm_bin_directories()
+        ]
+        self._dll_directories.append(os.add_dll_directory(str(library_path.parent)))
         self._library = ctypes.WinDLL(str(library_path))
         for function_name in ("wavmg_d3d12_create", "wavmg_d3d12_open"):
             function = getattr(self._library, function_name)

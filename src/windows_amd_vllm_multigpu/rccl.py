@@ -9,6 +9,8 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from .runtime_paths import rocm_bin_directories
+
 
 NCCL_SUM = 0
 _DTYPES = {
@@ -110,9 +112,8 @@ class RcclCommunicator:
         )
 
     def _load_library(self, path: Path) -> ctypes.CDLL:
-        site_packages = Path(torch.__file__).resolve().parent.parent
         for directory in (
-            site_packages / "_rocm_sdk_devel" / "bin",
+            *rocm_bin_directories(),
             Path(torch.__file__).resolve().parent / "lib",
             path.parent,
         ):

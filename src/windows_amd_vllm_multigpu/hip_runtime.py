@@ -7,6 +7,8 @@ import os
 from collections.abc import Iterable
 from pathlib import Path
 
+from .runtime_paths import find_hip_runtime
+
 HIP_MEMCPY_HOST_TO_DEVICE = 1
 HIP_MEMCPY_DEVICE_TO_HOST = 2
 HIP_MEMCPY_DEFAULT = 4
@@ -31,12 +33,7 @@ class HipRuntime:
         dependency_dirs: Iterable[str | Path] = (),
     ) -> None:
         if runtime_path is None:
-            import torch
-
-            site_packages = Path(torch.__file__).resolve().parent.parent
-            resolved_runtime_path = (
-                site_packages / "_rocm_sdk_devel" / "bin" / "amdhip64_7.dll"
-            )
+            resolved_runtime_path = find_hip_runtime()
         else:
             resolved_runtime_path = Path(runtime_path).expanduser().resolve()
 

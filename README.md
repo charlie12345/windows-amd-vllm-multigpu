@@ -120,6 +120,30 @@ collectives that are not routed to the D3D12 AllReduce. See
 [docs/architecture.md](docs/architecture.md) for the ABI, lifetime, and
 fallback details.
 
+## Portable ComfyUI integration
+
+The transport package also exposes `D3D12TensorBridge`, a single-process,
+one-way tensor transport for ComfyUI's built-in multi-GPU CFG work scheduler.
+It uses the same D3D12 cross-adapter heap and GPU-scheduled HIP copies, but it
+does not perform an AllReduce: a secondary GPU's completed model output is
+returned to the primary GPU for sampling aggregation.
+
+The separately versioned `ComfyUI-AMD-MultiGPU-Bridge` custom node installs a
+small output-transport hook in `comfy/samplers.py`. On the reference dual-R9700
+machine, clean GPU1-to-GPU0 runs measured 0.254 ms versus 0.477 ms for a 1 MiB
+payload and 2.686 ms versus 6.099 ms for 64 MiB. The custom node defaults to a
+64 MiB D3D12 heap and falls back to PyTorch outside its configured range.
+
+This ComfyUI path is genuine concurrent CFG work-unit execution on both GPUs,
+not tensor parallel sharding of a single diffusion layer. It needs two
+independent conditioning work units and does not accelerate CFG=1 workflows
+that produce only one unit.
+
+The Windows RCCL DLL loads under portable ComfyUI's ROCm 7.2 runtime, but the
+current same-process/two-rank collective test hangs at the first AllReduce.
+RCCL therefore remains disabled in the ComfyUI custom node until that test is
+fixed. The working one-process-per-GPU RCCL path remains available to vLLM.
+
 ## Measured reference result
 
 Qwen3-0.6B produced the same deterministic TP2 token IDs through RCCL and the
