@@ -1,0 +1,130 @@
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 11c78c7e7..f4c840e54 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -1275,6 +1275,11 @@ class EngineCoreProc(EngineCore):
+         # Ensure we can serialize transformer config after spawning
+         maybe_register_config_serialize_by_value()
+ 
++        # Windows multiprocessing termination bypasses Python signal handlers.
++        # The local process manager passes this spawn-safe event so EngineCore
++        # can run its ordinary worker and HIP resource teardown before exit.
++        shutdown_event = kwargs.pop("shutdown_event", None)
++
+         engine_core: EngineCoreProc | None = None
+         signal_callback: SignalCallback | None = None
+         try:
+@@ -1339,6 +1344,24 @@ class EngineCoreProc(EngineCore):
+             signal.signal(signal.SIGTERM, signal_handler)
+             signal.signal(signal.SIGINT, signal_handler)
+ 
++            if shutdown_event is not None:
++
++                def shutdown_event_monitor():
++                    shutdown_event.wait()
++                    if engine_core.shutdown_state == EngineShutdownState.RUNNING:
++                        logger.info(
++                            "[shutdown] EngineCore: cooperative Windows "
++                            "shutdown requested"
++                        )
++                        engine_core.shutdown_state = EngineShutdownState.REQUESTED
++                        signal_callback.trigger()
++
++                threading.Thread(
++                    target=shutdown_event_monitor,
++                    daemon=True,
++                    name="EngineCoreWindowsShutdown",
++                ).start()
++
+             engine_core.run_busy_loop()
+ 
+         except SystemExit:
+diff --git a/vllm/v1/engine/utils.py b/vllm/v1/engine/utils.py
+index 80df8a215..1f28ca45e 100644
+--- a/vllm/v1/engine/utils.py
++++ b/vllm/v1/engine/utils.py
+@@ -5,6 +5,7 @@ import contextlib
+ import os
+ import sys
+ import threading
++import time
+ import weakref
+ from collections.abc import Callable, Iterator
+ from dataclasses import dataclass
+@@ -43,6 +44,32 @@ logger = init_logger(__name__)
+ STARTUP_POLL_PERIOD_MS = 10000
+ 
+ 
++def _shutdown_core_processes(
++    processes: list[BaseProcess],
++    shutdown_event=None,
++    timeout: float | None = None,
++) -> None:
++    """Cooperatively stop EngineCore children before forced termination.
++
++    ``multiprocessing.Process.terminate()`` uses ``TerminateProcess`` on
++    Windows, bypassing Python signal handlers and EngineCore's worker cleanup.
++    Give Windows children an explicit, spawn-safe shutdown event first so HIP
++    contexts and tensor-parallel workers are released normally.
++    """
++    if shutdown_event is not None:
++        shutdown_event.set()
++        grace_timeout = 5.0 if timeout is None else timeout
++        deadline = time.monotonic() + grace_timeout
++        for proc in processes:
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                break
++            if proc.is_alive():
++                proc.join(remaining)
++
++    shutdown(processes, timeout=timeout)
++
++
+ class CoreEngineState(Enum):
+     NEW = auto()
+     CONNECTED = auto()
+@@ -138,6 +165,7 @@ class CoreEngineProcManager:
+         tensor_queue: Queue | None = None,
+     ):
+         context = get_mp_context()
++        self.shutdown_event = context.Event() if sys.platform == "win32" else None
+         common_kwargs = {
+             "vllm_config": vllm_config,
+             "local_client": local_client,
+@@ -146,6 +174,8 @@ class CoreEngineProcManager:
+             "log_stats": log_stats,
+             "tensor_queue": tensor_queue,
+         }
++        if self.shutdown_event is not None:
++            common_kwargs["shutdown_event"] = self.shutdown_event
+ 
+         if client_handshake_address:
+             common_kwargs["client_handshake_address"] = client_handshake_address
+@@ -171,7 +201,12 @@ class CoreEngineProcManager:
+                 )
+             )
+ 
+-        self._finalizer = weakref.finalize(self, shutdown, self.processes)
++        self._finalizer = weakref.finalize(
++            self,
++            _shutdown_core_processes,
++            self.processes,
++            self.shutdown_event,
++        )
+         self.manager_stopped = threading.Event()
+         self.failed_proc_name: str | None = None
+ 
+@@ -218,7 +253,11 @@ class CoreEngineProcManager:
+         """Shutdown engine core processes with configurable timeout."""
+         self.manager_stopped.set()
+         if self._finalizer.detach() is not None:
+-            shutdown(self.processes, timeout=timeout)
++            _shutdown_core_processes(
++                self.processes,
++                self.shutdown_event,
++                timeout=timeout,
++            )
+ 
+     def monitor_engine_liveness(self) -> None:
+         """Monitor engine core process liveness."""

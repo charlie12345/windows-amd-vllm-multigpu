@@ -8,7 +8,7 @@ distribution checklist, not legal advice.
 
 | Material | Origin and pinned source | Applicable terms | Files shipped here |
 | --- | --- | --- | --- |
-| Original Python, C++, HIP, PowerShell, CMake, probes, and documentation | Windows AMD vLLM Multi-GPU contributors | Apache License 2.0 | `LICENSE`, `NOTICE` |
+| Original Python, C++, HIP, PowerShell, CMake, probes, and documentation | Carlo Pasquale (`@charlie12345`) and Windows AMD vLLM Multi-GPU contributors | Apache License 2.0 | `LICENSE`, `NOTICE` |
 | vLLM compatibility patch | `charlie12345/vLLM_for_AMD` at `fb9fb8c5aeaed96c91eef5cb48743a96f8496907`, derived from vLLM | Apache License 2.0 and the pinned fork's NOTICE | `patches/vllm/`, `LICENSES/VLLM-UPSTREAM-LICENSE.txt`, `LICENSES/VLLM-UPSTREAM-NOTICE.txt` |
 | Native Windows RCCL patch and a resulting `rccl.dll` | ROCm `rocm-systems/projects/rccl` at `ee3bae9a931561506c49dcf82fca52ec4711c34f`, derived in part from NVIDIA NCCL | Upstream BSD-3-Clause terms plus retained third-party terms | `patches/rccl/`, `LICENSES/RCCL-UPSTREAM-LICENSE.txt`, `LICENSES/RCCL-UPSTREAM-NOTICES.txt`, `LICENSES/RCCL-UPSTREAM-ThirdPartyNotices.txt` |
 | RCCL files added by this Windows port | Windows AMD vLLM Multi-GPU contributors, added inside the RCCL-derived tree | BSD-3-Clause, matching the surrounding RCCL project; each added source carries an SPDX identifier | Included inside the version-pinned RCCL patch |
@@ -16,6 +16,11 @@ distribution checklist, not legal advice.
 | ROCm, HIP, PyTorch, Triton, Vulkan SDK, Windows SDK, and build tools | Their respective publishers | Their respective upstream terms | Installed/fetched dependencies; not committed or relicensed here |
 | Current Mistral Small 24B AWQ test weights | `stelterlab/Mistral-Small-24B-Instruct-2501-AWQ` at `cbda099649a0188dd888d44f0e4964d8d982dc9a`, derived from Mistral Small 24B | Quantizer-publisher-declared Apache-2.0; retain base-model attribution | Downloaded to the user's Hugging Face cache; never committed or bundled |
 | Historical Mistral Small 24B BF16 baseline | `mistralai/Mistral-Small-24B-Instruct-2501` at `9527884be6e5616bdd54de542f9ae13384489724` | Model-publisher-declared Apache-2.0 | Results and pin retained; weights are not bundled |
+| Qwen3.8-27B BF16 format trial | `Qwen/Qwen3.8-27B` at `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` | Model-publisher-declared Apache-2.0 | Results and pin retained; weights were deleted and are not bundled |
+| Qwen3.8-27B native FP8 format trial | `Qwen/Qwen3.8-27B-FP8` at `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a` | Model-publisher-declared Apache-2.0 | Results and pin retained; weights were deleted and are not bundled |
+| Qwen3.8-27B native NVFP4 compatibility trial | `unsloth/Qwen3.8-27B-NVFP4` at `9e3d73c76eddb75f795cc24ccfbc5affe41c66bd`, derived from `Qwen/Qwen3.8-27B` | Quantizer-publisher-declared Apache-2.0; retain base-model attribution | Results and pin retained; weights were deleted and are not bundled |
+| Qwen3.8-27B standard W4A16 INT4 trial | `abihsoro/Qwen3.8-27B-AWQ-INT4` at `f2e0cac39907e7b1ed7fdb210363dd33cc18f993`, derived from `Qwen/Qwen3.8-27B` | Quantizer-publisher-declared Apache-2.0; retain base-model attribution | Downloaded to `G:` for local testing; never committed or bundled |
+| Qwen3.8-27B DFlash2 drafter trial | `z-lab/Qwen3.8-27B-DFlash2` at `50307d4c4cde6860d4eee73e2547cd786fe8e8a4`, for the Qwen3.8 target | Model-publisher-declared Apache-2.0; retain target-model attribution | Downloaded to `G:` for local testing; never committed or bundled |
 
 The two shorter `LICENSES/RCCL-LICENSE.txt` and
 `LICENSES/RCCL-NOTICES.txt` files are convenient distribution copies and a

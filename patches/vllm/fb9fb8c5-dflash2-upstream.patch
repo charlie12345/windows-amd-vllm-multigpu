@@ -1,0 +1,1363 @@
+diff --git a/tests/models/registry.py b/tests/models/registry.py
+index 4ea3120715932e9ffd756ea9034f37f91e10550c..82bae5acd2b3e0ac6d8cc4d871d2099af59a7277 100644
+--- a/tests/models/registry.py
++++ b/tests/models/registry.py
+@@ -1448,6 +1448,14 @@ _SPECULATIVE_DECODING_EXAMPLE_MODELS = {
+         max_model_len=8192,  # Reduce max len to ensure test runs in low-VRAM CI env
+         max_num_seqs=32,
+     ),
++    "DFlash2DraftModel": _HfExamplesInfo(
++        "Qwen/Qwen3.8-27B",
++        speculative_model="z-lab/Qwen3.8-27B-DFlash2",
++        is_available_online=False,
++        use_original_num_layers=True,
++        max_model_len=8192,
++        max_num_seqs=32,
++    ),
+     "DFlashLagunaForCausalLM": _HfExamplesInfo(
+         "poolside/Laguna-XS-2.1-NVFP4",
+         speculative_model="poolside/Laguna-XS-2.1-DFlash-NVFP4",
+diff --git a/tests/test_config.py b/tests/test_config.py
+index 21bdde0457d554efbe81ff3e70de9437e3666f67..eec83a446b0fc0b1a5261a861fc2ae64756bedfa 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -68,6 +68,28 @@ def test_v2_model_runner_env_tri_state(monkeypatch, env_value, expected):
+     assert envs.VLLM_USE_V2_MODEL_RUNNER is expected
+ 
+ 
++def test_dflash2_draft_forces_v2_model_runner():
++    """DFlash2 must use the V2-only candidate selector."""
++
++    def config(method, architectures):
++        return SimpleNamespace(
++            speculative_config=SimpleNamespace(
++                method=method,
++                draft_model_config=SimpleNamespace(architectures=architectures),
++            )
++        )
++
++    assert VllmConfig._is_dflash2_draft(config("dflash", ["DFlash2DraftModel"]))
++    assert not VllmConfig._is_dflash2_draft(config("dflash", ["DFlashDraftModel"]))
++    assert not VllmConfig._is_dflash2_draft(config("eagle", ["DFlash2DraftModel"]))
++    assert not VllmConfig._is_dflash2_draft(SimpleNamespace(speculative_config=None))
++    assert not VllmConfig._is_dflash2_draft(
++        SimpleNamespace(
++            speculative_config=SimpleNamespace(method="dflash", draft_model_config=None)
++        )
++    )
++
++
+ @pytest.mark.parametrize(
+     ("use_v2_model_runner", "expected_capture_sizes"),
+     [
+diff --git a/tests/v1/spec_decode/test_dflash2.py b/tests/v1/spec_decode/test_dflash2.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8e4f934cc99cc2527e2c61e90b7fdba58a4bd888
+--- /dev/null
++++ b/tests/v1/spec_decode/test_dflash2.py
+@@ -0,0 +1,255 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from contextlib import nullcontext
++from types import SimpleNamespace
++
++import pytest
++import torch
++from torch import nn
++
++import vllm.compilation.backends as compilation_backends
++from vllm.config import CompilationMode
++from vllm.model_executor.models import qwen3_dflash, qwen3_dflash2
++from vllm.model_executor.models.qwen3_dflash2 import (
++    DFlash2Qwen3ForCausalLM,
++    _grouped_conv,
++    _score_edges,
++)
++from vllm.v1.worker.gpu.spec_decode.dflash import utils as dflash_utils
++from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
++from vllm.v1.worker.gpu.spec_decode.dflash2.speculator import DFlash2Speculator
++
++pytestmark = pytest.mark.skip_global_cleanup
++
++
++@pytest.mark.parametrize("block_size", [5, 8])
++def test_grouped_conv_matches_reference(block_size: int):
++    torch.manual_seed(0)
++    batch, taps, num_groups, group_size = 3, 3, 4, 2
++    hidden = torch.randn(batch * block_size, num_groups * group_size)
++    delta = torch.randn(batch * block_size, taps, num_groups)
++    base = torch.randn(taps, num_groups * group_size)
++
++    actual = _grouped_conv(
++        hidden, delta, base, block_size, num_groups, group_size, taps
++    )
++    hidden_blocks = hidden.view(batch, block_size, num_groups, group_size)
++    expected = torch.zeros_like(hidden_blocks)
++    base = base.view(taps, num_groups, group_size)
++    delta = delta.view(batch, block_size, taps, num_groups)
++    for position in range(block_size):
++        for tap in range(min(taps, position + 1)):
++            expected[:, position] += (
++                base[tap] + delta[:, position, tap, :, None]
++            ) * hidden_blocks[:, position - tap]
++
++    torch.testing.assert_close(actual, expected.flatten(0, 1).flatten(-2))
++
++
++def test_selector_edges_match_sequential_reference():
++    torch.manual_seed(1)
++    batch, steps, top_k, rank = 2, 4, 3, 5
++    vocab = 17
++    predecessors = torch.randn(vocab, rank)
++    successors = torch.randn(vocab, rank)
++    candidate_ids = torch.randint(vocab, (batch, steps, top_k))
++    unary = torch.randn(batch, steps, top_k)
++    hidden = torch.randn(batch, steps, rank)
++    anchors = torch.randint(vocab, (batch,))
++
++    actual = _score_edges(
++        predecessors,
++        successors,
++        candidate_ids,
++        unary,
++        hidden,
++        anchors,
++        top_k,
++    )
++    expected = torch.empty_like(actual)
++    for step in range(steps):
++        pred = (
++            anchors[:, None].expand(-1, top_k)
++            if step == 0
++            else candidate_ids[:, step - 1]
++        )
++        expected[:, step] = unary[:, step, None] + torch.einsum(
++            "bpr,bcr->bpc",
++            predecessors[pred] * hidden[:, step, None],
++            successors[candidate_ids[:, step]],
++        )
++
++    torch.testing.assert_close(actual, expected)
++
++
++def _stub_base(monkeypatch, draft_logits):
++    """A DFlashSpeculator.__init__ that allocates only what the base class would.
++
++    The real base class fills draft_logits from draft_logits_spec, so callers
++    pass a tensor already in that state.
++    """
++
++    def init_base(self, _vllm_config, device):
++        self.draft_model_config = SimpleNamespace(
++            hf_config=SimpleNamespace(dflash_config={"selector_top_k": 3})
++        )
++        self.max_num_reqs = 2
++        self.num_query_per_req = 5
++        self.num_speculative_steps = 4
++        self.vocab_size = 17
++        self.draft_tokens = torch.empty((2, 4), dtype=torch.int64, device=device)
++        self.draft_logits = draft_logits
++
++    monkeypatch.setattr(DFlashSpeculator, "__init__", init_base)
++
++
++def test_selector_leaves_greedy_drafting_without_proposal_logits(monkeypatch):
++    """Greedy is the default, and it caches no proposal distribution.
++
++    The base class allocates draft_logits only for "probabilistic"; verification
++    reads `draft_logits is None` to decide whether a distribution is on offer, so
++    allocating one here would claim a proposal the walk never sampled from.
++    """
++    _stub_base(monkeypatch, None)
++    speculator = DFlash2Speculator(None, torch.device("cpu"))
++
++    assert speculator.draft_logits is None
++
++
++def test_selector_asks_for_fp32_proposal_logits():
++    """The spec the base class allocates from: fp32, filled -inf.
++
++    Not the head dtype -- rounding selector scores to bf16 moves the argmax of a
++    candidate row often enough that the walk and the rejection sampler checking it
++    would no longer read the same distribution.
++    """
++    dtype, fill = DFlash2Speculator.draft_logits_spec(None, None)
++
++    assert dtype is torch.float32
++    assert fill == float("-inf")
++
++
++def test_dflash2_loader_aliases_target_vocab_modules(monkeypatch):
++    target_embed = object()
++    target_lm_head = object()
++    target_model = SimpleNamespace(
++        model=SimpleNamespace(embed_tokens=target_embed),
++        lm_head=target_lm_head,
++    )
++    draft_model = SimpleNamespace(
++        model=SimpleNamespace(embed_tokens=object()),
++        lm_head=object(),
++    )
++    vllm_config = SimpleNamespace(
++        speculative_config=SimpleNamespace(
++            draft_model_config=SimpleNamespace(hf_config=SimpleNamespace()),
++            attention_backend=None,
++            kv_cache_dtype=None,
++        ),
++        attention_config=SimpleNamespace(),
++        cache_config=SimpleNamespace(),
++    )
++
++    monkeypatch.setattr(dflash_utils, "get_model", lambda **_: draft_model)
++    monkeypatch.setattr(
++        dflash_utils, "get_pp_group", lambda: SimpleNamespace(world_size=1)
++    )
++    monkeypatch.setattr(dflash_utils, "replace", lambda obj, **_: obj)
++    monkeypatch.setattr(compilation_backends, "set_model_tag", lambda _: nullcontext())
++    monkeypatch.setattr(qwen3_dflash, "dflash_has_any_non_causal", lambda _: False)
++    monkeypatch.setattr(
++        qwen3_dflash, "dflash_target_rope_is_neox_style", lambda _: None
++    )
++
++    loaded_draft = dflash_utils.load_dflash_model(target_model, vllm_config)
++
++    assert loaded_draft.model.embed_tokens is target_embed
++    assert loaded_draft.lm_head is target_lm_head
++
++
++def test_dflash2_rejects_pipeline_parallelism():
++    vllm_config = SimpleNamespace(
++        parallel_config=SimpleNamespace(pipeline_parallel_size=2)
++    )
++
++    with pytest.raises(ValueError, match="does not support pipeline parallelism"):
++        DFlash2Qwen3ForCausalLM(vllm_config=vllm_config)
++
++
++def test_dflash2_constructs_decoder_layers_and_vocab_placeholders(monkeypatch):
++    layer_indices = []
++
++    class VocabModule(nn.Module):
++        def __init__(self, vocab_size, *_args, **_kwargs):
++            super().__init__()
++            self.vocab_size = vocab_size
++
++    class NoopModule(nn.Module):
++        def __init__(self, *_args, **_kwargs):
++            super().__init__()
++
++    def init_dflash2_layer(self, _vllm_config, *, layer_idx, **_kwargs):
++        nn.Module.__init__(self)
++        layer_indices.append(layer_idx)
++
++    def init_base_layer(*_args, **_kwargs):
++        pytest.fail("DFlash2 must not construct DFlashQwen3DecoderLayer")
++
++    hf_config = SimpleNamespace(
++        vocab_size=1024,
++        hidden_size=16,
++        num_hidden_layers=2,
++        rms_norm_eps=1e-5,
++        eagle_config={},
++        dflash_config={
++            "selector_rank": 2,
++            "selector_top_k": 2,
++        },
++    )
++    vllm_config = SimpleNamespace(
++        speculative_config=SimpleNamespace(
++            draft_model_config=SimpleNamespace(hf_config=hf_config)
++        ),
++        model_config=SimpleNamespace(
++            dtype=torch.float32,
++            get_num_layers=lambda _: 4,
++            get_vocab_size=lambda: 1024,
++        ),
++        parallel_config=SimpleNamespace(pipeline_parallel_size=1),
++        cache_config=SimpleNamespace(),
++        compilation_config=SimpleNamespace(mode=CompilationMode.NONE),
++    )
++
++    monkeypatch.setattr(qwen3_dflash, "get_draft_quant_config", lambda _: None)
++    monkeypatch.setattr(qwen3_dflash, "get_current_vllm_config", lambda: vllm_config)
++    monkeypatch.setattr(qwen3_dflash, "VocabParallelEmbedding", VocabModule)
++    monkeypatch.setattr(qwen3_dflash, "ParallelLMHead", VocabModule)
++    monkeypatch.setattr(qwen3_dflash, "ReplicatedLinear", NoopModule)
++    monkeypatch.setattr(qwen3_dflash, "RMSNorm", NoopModule)
++    monkeypatch.setattr(qwen3_dflash, "LogitsProcessor", lambda *_args, **_kwargs: None)
++    monkeypatch.setattr(qwen3_dflash2, "CandidateSelector", NoopModule)
++    monkeypatch.setattr(
++        qwen3_dflash2,
++        "LogitsProcessor",
++        lambda *_args, **_kwargs: None,
++    )
++    monkeypatch.setattr(qwen3_dflash2, "set_model_tag", lambda _: nullcontext())
++    monkeypatch.setattr(
++        qwen3_dflash.DFlashQwen3DecoderLayer, "__init__", init_base_layer
++    )
++    monkeypatch.setattr(
++        qwen3_dflash2.DFlash2Qwen3DecoderLayer,
++        "__init__",
++        init_dflash2_layer,
++    )
++
++    model = DFlash2Qwen3ForCausalLM(vllm_config=vllm_config)
++
++    assert layer_indices == [0, 1]
++    assert all(
++        isinstance(layer, qwen3_dflash2.DFlash2Qwen3DecoderLayer)
++        for layer in model.model.layers
++    )
++    assert model.model.embed_tokens.vocab_size == 1
++    assert model.lm_head.vocab_size == 1
+diff --git a/tests/v1/spec_decode/test_dflash_causality.py b/tests/v1/spec_decode/test_dflash_causality.py
+index 02e2a0bdbec21f64e5cf2eabf52de5d9f53205cb..0f1de86cf95b40aeb8d0b30604df215112cf01d7 100644
+--- a/tests/v1/spec_decode/test_dflash_causality.py
++++ b/tests/v1/spec_decode/test_dflash_causality.py
+@@ -21,12 +21,13 @@ from vllm.v1.worker.gpu.spec_decode.eagle.eagle3_utils import (
+ )
+ 
+ 
+-def _config(num_hidden_layers, layer_types=None, causal_override=None):
++def _config(num_hidden_layers, layer_types=None, causal_override=None, is_causal=None):
+     dflash_config = None if causal_override is None else {"causal": causal_override}
+     return SimpleNamespace(
+         num_hidden_layers=num_hidden_layers,
+         layer_types=layer_types,
+         dflash_config=dflash_config,
++        is_causal=is_causal,
+     )
+ 
+ 
+@@ -40,6 +41,19 @@ def _config(num_hidden_layers, layer_types=None, causal_override=None):
+             _config(2, layer_types=["sliding_attention"] * 2, causal_override=False),
+             True,
+         ),
++        # DFlash2 stores the explicit attention semantics at the top level.
++        (
++            _config(
++                2,
++                layer_types=["sliding_attention"] * 2,
++                is_causal=False,
++            ),
++            True,
++        ),
++        (
++            _config(2, layer_types=["full_attention"] * 2, is_causal=True),
++            False,
++        ),
+         # SWA-derived: full-attention layers are non-causal.
+         (_config(2, layer_types=["sliding_attention", "full_attention"]), True),
+         # SWA-derived: all-sliding is fully causal.
+@@ -59,6 +73,16 @@ def test_dflash_layer_causal_is_per_layer():
+     assert _dflash_layer_causal(config, 1) is False
+ 
+ 
++def test_dflash_layer_causal_honors_top_level_override():
++    config = _config(
++        2,
++        layer_types=["sliding_attention", "full_attention"],
++        is_causal=False,
++    )
++    assert _dflash_layer_causal(config, 0) is False
++    assert _dflash_layer_causal(config, 1) is False
++
++
+ def _vllm_config(**draft_config):
+     config = SimpleNamespace(**draft_config)
+     return SimpleNamespace(
+diff --git a/vllm/config/vllm.py b/vllm/config/vllm.py
+index d6e55798cae8be39240515f3eee9cbca2fcf7ed2..53c76d4d35f39cccc06aba00fb0fb0fe8fbebac4 100644
+--- a/vllm/config/vllm.py
++++ b/vllm/config/vllm.py
+@@ -599,6 +599,12 @@ class VllmConfig:
+         if self._dflash_needs_multi_kv_group():
+             return True
+ 
++        # The DFlash2 candidate selector exists only in the V2 speculator. On V1
++        # the same checkpoint drafts through DFlashProposer, which never calls
++        # it, so the draft degrades to DFlash1 silently. Force V2 as for dspark.
++        if self._is_dflash2_draft():
++            return True
++
+         if self.model_config is not None and self.model_config.is_diffusion:
+             return True
+ 
+@@ -622,6 +628,17 @@ class VllmConfig:
+ 
+         return True
+ 
++    def _is_dflash2_draft(self) -> bool:
++        """Whether the DFlash draft is a DFlash2 one, by the architecture the
++        speculator selects on (v1/worker/gpu/spec_decode/__init__.py)."""
++        spec = self.speculative_config
++        if spec is None or spec.method != "dflash":
++            return False
++        draft_config = getattr(spec, "draft_model_config", None)
++        if draft_config is None:
++            return False
++        return "DFlash2DraftModel" in (draft_config.architectures or [])
++
+     def _dflash_needs_multi_kv_group(self) -> bool:
+         """Whether a DFlash draft mixes sliding-window and full attention."""
+         spec = self.speculative_config
+diff --git a/vllm/model_executor/layers/logits_processor.py b/vllm/model_executor/layers/logits_processor.py
+index 31298a66beedc5558355090d13b362042851a554..e7fd568b413b8611e9ccacfd7ca4024c78627527 100644
+--- a/vllm/model_executor/layers/logits_processor.py
++++ b/vllm/model_executor/layers/logits_processor.py
+@@ -2,6 +2,9 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """A layer that compute logits from hidden_stats."""
+ 
++from collections.abc import Callable
++from functools import cache
++
+ import torch
+ import torch.nn.functional as F
+ 
+@@ -10,12 +13,43 @@ from vllm.distributed import (
+     tensor_model_parallel_all_gather,
+     tensor_model_parallel_gather,
+ )
++from vllm.logger import init_logger
+ from vllm.model_executor.custom_op import PluggableLayer
+ from vllm.model_executor.layers.vocab_parallel_embedding import (
+     UnquantizedEmbeddingMethod,
+     VocabParallelEmbedding,
+ )
+ from vllm.platforms import current_platform
++from vllm.utils.flashinfer import has_flashinfer
++
++logger = init_logger(__name__)
++
++
++@cache
++def _flashinfer_topk() -> Callable[..., tuple[torch.Tensor, torch.Tensor]] | None:
++    """FlashInfer's radix top-k, or None for torch.topk.
++
++    The top-k spans the vocabulary, where the radix kernel is about twice
++    torch.topk.
++    """
++    if not current_platform.is_cuda():
++        return None
++    if not has_flashinfer():
++        logger.info_once(
++            "flashinfer is unavailable; vocab-parallel top-k uses torch.topk, "
++            "at roughly half the speed."
++        )
++        return None
++    from flashinfer import top_k
++
++    return top_k
++
++
++def _topk(scores: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
++    impl = _flashinfer_topk()
++    if impl is None or not scores.is_cuda:
++        return torch.topk(scores, k, dim=-1)
++    return impl(scores, k, sorted=True, deterministic=True)
+ 
+ 
+ # --8<-- [start:logits_processor]
+@@ -204,6 +238,53 @@ class LogitsProcessor(PluggableLayer):
+         top_tokens = gathered[:, :, 1].gather(dim=-1, index=max_rank_idx)
+         return top_tokens.squeeze(-1).to(torch.int64)
+ 
++    def get_top_k_tokens(
++        self,
++        lm_head: VocabParallelEmbedding,
++        hidden_states: torch.Tensor,
++        k: int,
++        embedding_bias: torch.Tensor | None = None,
++    ) -> tuple[torch.Tensor, torch.Tensor]:
++        """Vocab-parallel top-k without all-gathering full logits.
++
++        The `get_top_tokens` reduction widened from one token to k, returning
++        the values as well as the global ids. Communication is
++        O(batch * 2k * tp_size) rather than O(batch * vocab_size).
++
++        Scale and soft cap are applied to the k selected values rather than
++        the whole vocabulary; both are monotonic, so the selection is the same
++        and only k entries are touched.
++        """
++        if self.scale <= 0.0 and self.scale != 1.0:
++            raise ValueError(
++                "The local top-k reduction optimization is not supported for "
++                "non-positive logit scaling factors."
++            )
++
++        logits = self._apply_head(lm_head, hidden_states, embedding_bias)
++
++        # Mask out padding entries beyond org_vocab_size on this shard.
++        num_pad = lm_head.shard_indices.num_org_vocab_padding
++        if num_pad > 0:
++            logits[..., -num_pad:] = -float("inf")
++
++        values, ids = _topk(logits, k)
++        # Convert shard-local indices to global vocab indices.
++        ids = ids.to(torch.int64) + lm_head.shard_indices.org_vocab_start_index
++
++        if lm_head.tp_size > 1:
++            values = tensor_model_parallel_all_gather(values, dim=-1)
++            ids = tensor_model_parallel_all_gather(ids, dim=-1)
++            values, selected = _topk(values, k)
++            ids = ids.gather(-1, selected)
++
++        values = values.float()
++        if self.scale != 1.0:
++            values = values * self.scale
++        if self.soft_cap is not None:
++            values = torch.tanh(values / self.soft_cap) * self.soft_cap
++        return ids, values
++
+     def extra_repr(self) -> str:
+         s = f"vocab_size={self.vocab_size}"
+         s += f", org_vocab_size={self.org_vocab_size}"
+diff --git a/vllm/model_executor/models/qwen3_dflash.py b/vllm/model_executor/models/qwen3_dflash.py
+index 90b2f48faa8252ac53033b7ec35d5856cb99c7ee..08617c33bceafaa68cecc7ba882d549faa0ca331 100644
+--- a/vllm/model_executor/models/qwen3_dflash.py
++++ b/vllm/model_executor/models/qwen3_dflash.py
+@@ -56,10 +56,13 @@ _SLIDING_ATTENTION = "sliding_attention"
+ 
+ 
+ def _dflash_layer_causal(config: Qwen3Config, layer_idx: int) -> bool:
+-    """``dflash_config.causal`` overrides all layers; else only SWA layers causal."""
++    """Resolve explicit causality before falling back to legacy layer defaults."""
++    is_causal = getattr(config, "is_causal", None)
++    if is_causal is not None:
++        return bool(is_causal)
+     override = (getattr(config, "dflash_config", None) or {}).get("causal")
+     if override is not None:
+-        return override
++        return bool(override)
+     layer_types = getattr(config, "layer_types", None)
+     return bool(layer_types) and layer_types[layer_idx] == _SLIDING_ATTENTION
+ 
+@@ -72,6 +75,24 @@ def dflash_has_any_non_causal(config: Qwen3Config) -> bool:
+     )
+ 
+ 
++def dflash_target_rope_is_neox_style(target_model: nn.Module) -> bool | None:
++    """Read the target model's RoPE layout for its DFlash draft head.
++
++    A mismatch is valid code but produces low acceptance, so the draft must
++    inherit this value from the already-built target model.
++    """
++    language_model = (
++        target_model.get_language_model()
++        if hasattr(target_model, "get_language_model")
++        else target_model
++    )
++    for module in language_model.modules():
++        style = getattr(module, "is_neox_style", None)
++        if isinstance(style, bool):
++            return style
++    return None
++
++
+ def _get_dflash_fc_input_size(vllm_config: VllmConfig) -> int:
+     spec_config = vllm_config.speculative_config
+     config = spec_config.draft_model_config.hf_config
+@@ -166,6 +187,7 @@ class DFlashQwen3Attention(nn.Module):
+         add_swa_attention_sink_bias: bool = False,
+         sliding_window: int | None = None,
+         causal: bool = False,
++        is_neox_style: bool = True,
+         cache_config: CacheConfig | None = None,
+         quant_config: QuantizationConfig | None = None,
+         prefix: str = "",
+@@ -209,6 +231,7 @@ class DFlashQwen3Attention(nn.Module):
+         self.rotary_emb = get_rope(
+             self.head_dim,
+             max_position=max_position,
++            is_neox_style=is_neox_style,
+             rope_parameters=rope_parameters,
+         )
+ 
+@@ -291,6 +314,9 @@ class DFlashQwen3DecoderLayer(nn.Module):
+         # non-causal) from the draft config.
+         sliding_window, causal = _resolve_layer_attention(config, layer_idx)
+ 
++        # Checkpoints do not encode this target-dependent RoPE layout.
++        is_neox_style = getattr(config, "is_neox_style", True)
++
+         self.self_attn = DFlashQwen3Attention(
+             hidden_size=self.hidden_size,
+             num_heads=config.num_attention_heads,
+@@ -301,6 +327,7 @@ class DFlashQwen3DecoderLayer(nn.Module):
+             add_swa_attention_sink_bias=add_swa_attention_sink_bias,
+             sliding_window=sliding_window,
+             causal=causal,
++            is_neox_style=is_neox_style,
+             head_dim=getattr(config, "head_dim", None),
+             cache_config=cache_config,
+             quant_config=quant_config,
+@@ -344,6 +371,8 @@ class DFlashQwen3DecoderLayer(nn.Module):
+ 
+ @support_torch_compile
+ class DFlashQwen3Model(nn.Module):
++    decoder_layer_cls = DFlashQwen3DecoderLayer
++
+     hf_to_vllm_mapper = WeightsMapper(
+         orig_to_new_substr={"midlayer.": "layers.0."},
+         orig_to_new_stacked={
+@@ -354,6 +383,10 @@ class DFlashQwen3Model(nn.Module):
+             ".up_proj": (".gate_up_proj", 1),
+         },
+     )
++    decoder_layer_cls = DFlashQwen3DecoderLayer
++    # A DFlash variant that always shares its vocabulary modules with the
++    # target can override this to avoid allocating an unused full vocabulary.
++    transient_vocab_size: int | None = None
+ 
+     def __init__(
+         self,
+@@ -364,7 +397,12 @@ class DFlashQwen3Model(nn.Module):
+     ) -> None:
+         super().__init__()
+         self.config = vllm_config.speculative_config.draft_model_config.hf_config
+-        self.vocab_size = self.config.vocab_size
++        self.vocab_size = (
++            self.transient_vocab_size
++            if self.transient_vocab_size is not None
++            and vllm_config.parallel_config.pipeline_parallel_size == 1
++            else self.config.vocab_size
++        )
+         self.quant_config = get_draft_quant_config(vllm_config)
+ 
+         drafter_config = getattr(self.config, "eagle_config", {})
+@@ -378,7 +416,7 @@ class DFlashQwen3Model(nn.Module):
+         current_vllm_config = get_current_vllm_config()
+ 
+         self.embed_tokens = VocabParallelEmbedding(
+-            self.config.vocab_size,
++            self.vocab_size,
+             self.config.hidden_size,
+             prefix=maybe_prefix(prefix, "embed_tokens"),
+         )
+@@ -397,7 +435,7 @@ class DFlashQwen3Model(nn.Module):
+ 
+         self.layers = nn.ModuleList(
+             [
+-                DFlashQwen3DecoderLayer(
++                self.decoder_layer_cls(
+                     current_vllm_config,
+                     config=self.config,
+                     layer_idx=layer_idx,
+@@ -662,6 +700,8 @@ class DFlashQwen3Model(nn.Module):
+ 
+ 
+ class DFlashQwen3ForCausalLM(Qwen3ForCausalLM):
++    model_cls = DFlashQwen3Model
++
+     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+         nn.Module.__init__(self)
+         self.draft_model_config = vllm_config.speculative_config.draft_model_config
+@@ -671,21 +711,27 @@ class DFlashQwen3ForCausalLM(Qwen3ForCausalLM):
+         target_layer_num = vllm_config.model_config.get_num_layers(
+             vllm_config.parallel_config
+         )
+-        self.model = DFlashQwen3Model(
++        self.model = self.model_cls(
+             vllm_config=vllm_config,
+             prefix=maybe_prefix(prefix, "model"),
+             start_layer_id=target_layer_num,
+         )
+ 
++        # DFlash2 always aliases these modules to the target after loading.
++        # Its one-token placeholders only exist until that handoff.
++        transient_vocab_size = self.model.transient_vocab_size
++        vocab_size = (
++            transient_vocab_size
++            if transient_vocab_size is not None
++            else self.config.draft_vocab_size
++        )
+         logit_scale = getattr(self.config, "logit_scale", 1.0)
+         self.lm_head = ParallelLMHead(
+-            self.config.draft_vocab_size,
++            vocab_size,
+             self.config.hidden_size,
+             prefix=maybe_prefix(prefix, "lm_head"),
+         )
+-        self.logits_processor = LogitsProcessor(
+-            self.config.draft_vocab_size, scale=logit_scale
+-        )
++        self.logits_processor = LogitsProcessor(vocab_size, scale=logit_scale)
+         target_vocab_size = vllm_config.model_config.get_vocab_size()
+         if self.config.draft_vocab_size != target_vocab_size:
+             self.draft_id_to_target_id = nn.Parameter(
+diff --git a/vllm/model_executor/models/qwen3_dflash2.py b/vllm/model_executor/models/qwen3_dflash2.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7f70f19d702eb3bf5be7912cef680d4492abe09d
+--- /dev/null
++++ b/vllm/model_executor/models/qwen3_dflash2.py
+@@ -0,0 +1,302 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++import torch
++import torch.nn.functional as F
++from torch import nn
++
++from vllm.compilation.backends import set_model_tag
++from vllm.compilation.decorators import support_torch_compile
++from vllm.config import CacheConfig, VllmConfig
++from vllm.model_executor.layers.linear import ReplicatedLinear
++from vllm.model_executor.layers.logits_processor import LogitsProcessor
++from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
++
++from .qwen3_dflash import (
++    DFlashQwen3DecoderLayer,
++    DFlashQwen3ForCausalLM,
++    DFlashQwen3Model,
++)
++from .utils import maybe_prefix
++
++
++def _grouped_conv(
++    hidden_states: torch.Tensor,
++    delta: torch.Tensor,
++    base: torch.Tensor,
++    block_size: int,
++    num_groups: int,
++    group_size: int,
++    taps: int,
++) -> torch.Tensor:
++    blocks = hidden_states.unflatten(-1, (num_groups, group_size))
++    coefficients = base.view(1, taps, num_groups, group_size) + delta.unsqueeze(-1)
++    output = coefficients[:, 0] * blocks
++    position = torch.arange(hidden_states.shape[0], device=hidden_states.device)
++    if block_size & (block_size - 1) == 0:
++        position = position & (block_size - 1)
++    else:
++        position = position % block_size
++    for tap in range(1, taps):
++        shifted = F.pad(blocks[:-tap], (0, 0, 0, 0, tap, 0))
++        output += coefficients[:, tap] * shifted * (position >= tap).view(-1, 1, 1)
++    return output.flatten(-2)
++
++
++class DFlashGroupedConv(nn.Module):
++    def __init__(
++        self,
++        hidden_size: int,
++        taps: int,
++        group_size: int,
++        block_size: int,
++        params_dtype: torch.dtype,
++        prefix: str,
++    ) -> None:
++        super().__init__()
++        if hidden_size % group_size:
++            raise ValueError(
++                f"conv_group_size={group_size} must divide hidden_size={hidden_size}."
++            )
++        self.block_size = block_size
++        self.taps = taps
++        self.group_size = group_size
++        self.num_groups = hidden_size // group_size
++        self.base_kernel = nn.Parameter(
++            torch.empty(2, taps, hidden_size, dtype=params_dtype),
++            requires_grad=False,
++        )
++        self.kernel_projection = ReplicatedLinear(
++            hidden_size,
++            2 * taps * self.num_groups,
++            bias=False,
++            params_dtype=params_dtype,
++            quant_config=None,
++            prefix=maybe_prefix(prefix, "kernel_projection"),
++            return_bias=False,
++        )
++
++    def _convolve(
++        self, hidden_states: torch.Tensor, delta: torch.Tensor, side: int
++    ) -> torch.Tensor:
++        return _grouped_conv(
++            hidden_states,
++            delta,
++            self.base_kernel[side],
++            self.block_size,
++            self.num_groups,
++            self.group_size,
++            self.taps,
++        )
++
++    def prepare(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
++        coefficients = self.kernel_projection(hidden_states).reshape(
++            hidden_states.shape[0], 2, self.taps, self.num_groups
++        )
++        return self._convolve(hidden_states, coefficients[:, 0], 0), coefficients[:, 1]
++
++    def finish(
++        self, hidden_states: torch.Tensor, coefficients: torch.Tensor
++    ) -> torch.Tensor:
++        return self._convolve(hidden_states, coefficients, 1)
++
++
++class DFlash2Qwen3DecoderLayer(DFlashQwen3DecoderLayer):
++    def __init__(
++        self,
++        vllm_config: VllmConfig,
++        *,
++        config,
++        layer_idx: int,
++        cache_config: CacheConfig | None = None,
++        quant_config: QuantizationConfig | None = None,
++        prefix: str = "",
++    ) -> None:
++        super().__init__(
++            vllm_config,
++            config=config,
++            layer_idx=layer_idx,
++            cache_config=cache_config,
++            quant_config=quant_config,
++            prefix=prefix,
++        )
++        draft_config = config.dflash_config
++        speculative_config = vllm_config.speculative_config
++        assert speculative_config is not None
++        conv_args = dict(
++            hidden_size=config.hidden_size,
++            taps=int(draft_config["conv_kernel_size"]),
++            group_size=int(draft_config["conv_group_size"]),
++            # Query tokens per request: the bonus token plus the mask tokens.
++            block_size=1 + speculative_config.num_speculative_tokens,
++            params_dtype=vllm_config.model_config.dtype,
++        )
++        self.attention_conv = DFlashGroupedConv(
++            **conv_args, prefix=maybe_prefix(prefix, "attention_conv")
++        )
++        self.mlp_conv = DFlashGroupedConv(
++            **conv_args, prefix=maybe_prefix(prefix, "mlp_conv")
++        )
++
++    def forward(
++        self,
++        positions: torch.Tensor,
++        hidden_states: torch.Tensor,
++        residual: torch.Tensor | None,
++    ) -> tuple[torch.Tensor, torch.Tensor]:
++        if residual is None:
++            residual = hidden_states
++            hidden_states = self.input_layernorm(hidden_states)
++        else:
++            hidden_states, residual = self.input_layernorm(hidden_states, residual)
++
++        hidden_states, coefficients = self.attention_conv.prepare(hidden_states)
++        hidden_states = self.self_attn(positions=positions, hidden_states=hidden_states)
++        hidden_states = self.attention_conv.finish(hidden_states, coefficients)
++
++        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
++        hidden_states, coefficients = self.mlp_conv.prepare(hidden_states)
++        hidden_states = self.mlp(hidden_states)
++        hidden_states = self.mlp_conv.finish(hidden_states, coefficients)
++        return hidden_states, residual
++
++
++def _score_edges(
++    predecessor_table: torch.Tensor,
++    successor_table: torch.Tensor,
++    candidate_ids: torch.Tensor,
++    unary_logits: torch.Tensor,
++    hidden: torch.Tensor,
++    anchor_token_ids: torch.Tensor,
++    top_k: int,
++) -> torch.Tensor:
++    successors = successor_table[candidate_ids]
++    predecessor_ids = torch.cat(
++        (
++            anchor_token_ids[:, None, None].expand(-1, 1, top_k),
++            candidate_ids[:, :-1],
++        ),
++        dim=1,
++    )
++    predecessors = predecessor_table[predecessor_ids]
++    return unary_logits[:, :, None] + torch.einsum(
++        "blpr,blcr->blpc", predecessors * hidden[:, :, None], successors
++    )
++
++
++@support_torch_compile
++class CandidateSelector(nn.Module):
++    def __init__(
++        self,
++        hidden_size: int,
++        vocab_size: int,
++        rank: int,
++        top_k: int,
++        params_dtype: torch.dtype,
++        prefix: str,
++    ) -> None:
++        super().__init__()
++        self.top_k = top_k
++        self.predecessor_codebook = nn.Parameter(
++            torch.empty(vocab_size, rank, dtype=params_dtype), requires_grad=False
++        )
++        self.successor_codebook = nn.Parameter(
++            torch.empty(vocab_size, rank, dtype=params_dtype), requires_grad=False
++        )
++        self.hidden_projection = ReplicatedLinear(
++            hidden_size,
++            rank,
++            bias=False,
++            params_dtype=params_dtype,
++            quant_config=None,
++            prefix=maybe_prefix(prefix, "hidden_projection"),
++            return_bias=False,
++        )
++
++    def forward(
++        self,
++        candidate_ids: torch.Tensor,
++        unary_logits: torch.Tensor,
++        hidden_states: torch.Tensor,
++        anchor_token_ids: torch.Tensor,
++    ) -> torch.Tensor:
++        hidden = self.hidden_projection(hidden_states)
++        return _score_edges(
++            self.predecessor_codebook,
++            self.successor_codebook,
++            candidate_ids,
++            unary_logits,
++            hidden,
++            anchor_token_ids,
++            self.top_k,
++        )
++
++
++class DFlash2Qwen3Model(DFlashQwen3Model):
++    decoder_layer_cls = DFlash2Qwen3DecoderLayer
++
++    # DFlash2 checkpoints do not carry vocabulary weights. These are replaced
++    # with the target modules in load_dflash_model after checkpoint loading.
++    transient_vocab_size = 1
++
++    def __init__(
++        self,
++        *,
++        vllm_config: VllmConfig,
++        start_layer_id: int = 0,
++        prefix: str = "",
++    ) -> None:
++        super().__init__(
++            vllm_config=vllm_config,
++            start_layer_id=start_layer_id,
++            prefix=prefix,
++        )
++        draft_config = self.config.dflash_config
++        self.input_embedding_scale = float(
++            draft_config.get("input_embedding_scale", 1.0)
++        )
++        # Without its own tag the selector shares the draft head's compile cache.
++        with set_model_tag("dflash2_candidate_selector"):
++            self.candidate_selector = CandidateSelector(
++                hidden_size=self.config.hidden_size,
++                vocab_size=self.config.vocab_size,
++                rank=int(draft_config["selector_rank"]),
++                top_k=int(draft_config["selector_top_k"]),
++                params_dtype=vllm_config.model_config.dtype,
++                prefix=maybe_prefix(prefix, "candidate_selector"),
++            )
++
++    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
++        return super().embed_input_ids(input_ids) * self.input_embedding_scale
++
++
++class DFlash2Qwen3ForCausalLM(DFlashQwen3ForCausalLM):
++    model_cls = DFlash2Qwen3Model
++
++    has_own_embed_tokens = False
++    has_own_lm_head = False
++
++    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
++        if vllm_config.parallel_config.pipeline_parallel_size > 1:
++            raise ValueError(
++                "DFlash2 does not support pipeline parallelism because its "
++                "embedding is shared with the target model."
++            )
++        super().__init__(vllm_config=vllm_config, prefix=prefix)
++        draft_config = self.config.dflash_config
++        softcap = float(draft_config.get("final_logit_softcapping") or 0.0)
++        self.candidate_logits_processor = LogitsProcessor(
++            vllm_config.model_config.get_vocab_size(),
++            scale=float(draft_config.get("output_multiplier", 1.0)),
++            soft_cap=softcap if softcap > 0 else None,
++        )
++
++    def compute_candidates(
++        self, hidden_states: torch.Tensor
++    ) -> tuple[torch.Tensor, torch.Tensor]:
++        return self.candidate_logits_processor.get_top_k_tokens(
++            self.lm_head, hidden_states, self.model.candidate_selector.top_k
++        )
++
++
++EntryClass = DFlash2Qwen3ForCausalLM
+diff --git a/vllm/model_executor/models/registry.py b/vllm/model_executor/models/registry.py
+index 545b257794d0560b237219285c293d5fcb08af4c..42f7a376e75580e0e81bb106e66cd56bf4eda5ec 100644
+--- a/vllm/model_executor/models/registry.py
++++ b/vllm/model_executor/models/registry.py
+@@ -614,6 +614,7 @@ _SPECULATIVE_DECODING_MODELS = {
+     "EagleLlama4ForCausalLM": ("llama4_eagle", "EagleLlama4ForCausalLM"),
+     "EagleMiniCPMForCausalLM": ("minicpm_eagle", "EagleMiniCPMForCausalLM"),
+     "DFlashDraftModel": ("qwen3_dflash", "DFlashQwen3ForCausalLM"),
++    "DFlash2DraftModel": ("qwen3_dflash2", "DFlash2Qwen3ForCausalLM"),
+     "DSparkDraftModel": ("vllm.models.deepseek_v4", "DSparkDeepseekV4ForCausalLM"),
+     "Qwen3DSparkModel": ("qwen3_dspark", "Qwen3DSparkForCausalLM"),
+     "K3DSparkModel": (
+diff --git a/vllm/v1/worker/gpu/sample/gumbel.py b/vllm/v1/worker/gpu/sample/gumbel.py
+index 190307d5e75a9d2de3e188c0512750f42a55beba..3d3a5831b65bd333c91eca5461960ba4ce34763a 100644
+--- a/vllm/v1/worker/gpu/sample/gumbel.py
++++ b/vllm/v1/worker/gpu/sample/gumbel.py
+@@ -81,6 +81,40 @@ def tl_rand32(seed, offset, includes_zero: tl.constexpr):
+     return u
+ 
+ 
++@triton.jit
++def gumbel_noised_argmax(
++    logits,
++    keys,
++    mask,
++    seed,
++    pos,
++    temp,
++    USE_FP64: tl.constexpr,
++    APPLY_TEMPERATURE: tl.constexpr = False,
++):
++    """Apply deterministic Gumbel noise and return the winning key.
++
++    DFlash2 uses candidate token ids as keys so its proposal walk and target
++    verification generate identical noise for the same request and position.
++    """
++    if temp != 0.0 and APPLY_TEMPERATURE:
++        logits = logits / temp
++
++    if USE_FP64:
++        logits = logits.to(tl.float64)
++    if temp != 0.0:
++        gumbel_seed = tl.randint(seed, pos)
++        if USE_FP64:
++            u = tl_rand64(gumbel_seed, keys, includes_zero=False)
++            gumbel_noise = -tl.log(-tl.log(u))
++        else:
++            u = tl_rand32(gumbel_seed, keys, includes_zero=False)
++            gumbel_noise = -tl.log(-tldevice.log1p(-u))
++        logits = tl.where(mask, logits + gumbel_noise, float("-inf"))
++
++    return tl.max(logits, axis=0, return_indices=True)
++
++
+ @triton.jit
+ def gumbel_block_argmax(
+     logits,
+diff --git a/vllm/v1/worker/gpu/spec_decode/__init__.py b/vllm/v1/worker/gpu/spec_decode/__init__.py
+index c70f169f7be652ffd510e63219f26f31fe1b34ff..927846bdf248ddfc8418cf112ac5097ac7dd8de3 100644
+--- a/vllm/v1/worker/gpu/spec_decode/__init__.py
++++ b/vllm/v1/worker/gpu/spec_decode/__init__.py
+@@ -9,6 +9,12 @@ def init_speculator(vllm_config: VllmConfig, device: torch.device):
+     speculative_config = vllm_config.speculative_config
+     assert speculative_config is not None
+     if speculative_config.method == "dflash":
++        if "DFlash2DraftModel" in speculative_config.draft_model_config.architectures:
++            from vllm.v1.worker.gpu.spec_decode.dflash2.speculator import (
++                DFlash2Speculator,
++            )
++
++            return DFlash2Speculator(vllm_config, device)
+         from vllm.v1.worker.gpu.spec_decode.dflash.speculator import (
+             DFlashSpeculator,
+         )
+diff --git a/vllm/v1/worker/gpu/spec_decode/dflash/utils.py b/vllm/v1/worker/gpu/spec_decode/dflash/utils.py
+index 478274a05671186e33559ea690f061daf4aadf36..b0128f1128d63fca80f27547bcd967c5f6808fd7 100644
+--- a/vllm/v1/worker/gpu/spec_decode/dflash/utils.py
++++ b/vllm/v1/worker/gpu/spec_decode/dflash/utils.py
+@@ -13,11 +13,17 @@ from vllm.v1.worker.gpu.spec_decode.eagle.utils import (
+ 
+ def load_dflash_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Module:
+     from vllm.compilation.backends import set_model_tag
+-    from vllm.model_executor.models.qwen3_dflash import dflash_has_any_non_causal
++    from vllm.model_executor.models.qwen3_dflash import (
++        dflash_has_any_non_causal,
++        dflash_target_rope_is_neox_style,
++    )
+ 
+     speculative_config = vllm_config.speculative_config
+     assert speculative_config is not None
+     draft_model_config = speculative_config.draft_model_config
++    is_neox_style = dflash_target_rope_is_neox_style(target_model)
++    if is_neox_style is not None:
++        draft_model_config.hf_config.is_neox_style = is_neox_style
+     # Select an attention backend that supports the drafter's attention: mixing
+     # a non-causal layer onto a causal-only backend would fail.
+     draft_vllm_config = replace(
+diff --git a/vllm/v1/worker/gpu/spec_decode/dflash2/__init__.py b/vllm/v1/worker/gpu/spec_decode/dflash2/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..208f01a7cb5ee04c88d276fec2082cd4e830884b
+--- /dev/null
++++ b/vllm/v1/worker/gpu/spec_decode/dflash2/__init__.py
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+diff --git a/vllm/v1/worker/gpu/spec_decode/dflash2/speculator.py b/vllm/v1/worker/gpu/spec_decode/dflash2/speculator.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..621afc38c716aaa79dde15e365c94e61d0ebb860
+--- /dev/null
++++ b/vllm/v1/worker/gpu/spec_decode/dflash2/speculator.py
+@@ -0,0 +1,215 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from typing import Any
++
++import torch
++
++from vllm.config import VllmConfig
++from vllm.config.compilation import CUDAGraphMode
++from vllm.triton_utils import tl, triton
++from vllm.v1.worker.gpu.sample.gumbel import gumbel_noised_argmax
++from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
++
++
++@triton.jit
++def _selector_walk_kernel(
++    scores_ptr,
++    candidate_ptr,
++    sample_pos_ptr,
++    req_state_ptr,
++    temperature_ptr,
++    seeds_ptr,
++    tokens_ptr,
++    realized_scores_ptr,
++    num_steps: tl.constexpr,
++    top_k: tl.constexpr,
++    BLOCK_K: tl.constexpr,
++    SAMPLE_PROBABILISTIC: tl.constexpr,
++    USE_FP64: tl.constexpr,
++):
++    row = tl.program_id(0)
++    offsets = tl.arange(0, BLOCK_K)
++    mask = offsets < top_k
++    req_state = tl.load(req_state_ptr + row * num_steps)
++    valid = req_state >= 0
++    temperature = tl.load(temperature_ptr + req_state, mask=valid, other=0.0)
++    seed = tl.load(seeds_ptr + req_state, mask=valid, other=0)
++    previous = 0
++    for step in range(num_steps):
++        flat = row * num_steps + step
++        score_base = (flat * top_k + previous) * top_k
++        scores = tl.load(
++            scores_ptr + score_base + offsets,
++            mask=mask & valid,
++            other=float("-inf"),
++        ).to(tl.float64 if USE_FP64 else tl.float32)
++        candidate_base = flat * top_k
++        candidates = tl.load(
++            candidate_ptr + candidate_base + offsets,
++            mask=mask & valid,
++            other=0,
++        )
++
++        # Candidate ids key the noise, matching the target's own sampling.
++        position = tl.load(sample_pos_ptr + flat) - 1
++        _, index = gumbel_noised_argmax(
++            scores,
++            candidates,
++            mask & valid,
++            seed,
++            position,
++            temperature if SAMPLE_PROBABILISTIC else 0.0,
++            USE_FP64=USE_FP64,
++        )
++
++        tl.store(
++            realized_scores_ptr + candidate_base + offsets,
++            scores,
++            mask=mask & valid,
++        )
++        token = tl.load(candidate_ptr + candidate_base + index, mask=valid, other=0)
++        tl.store(tokens_ptr + flat, token, mask=valid)
++        previous = index
++
++
++@triton.jit
++def _cache_draft_logits_kernel(
++    draft_logits_ptr,
++    cached_candidate_ptr,
++    candidate_ptr,
++    scores_ptr,
++    req_state_ptr,
++    draft_logits_stride_0,
++    draft_logits_stride_1,
++    num_steps: tl.constexpr,
++    top_k: tl.constexpr,
++    BLOCK_K: tl.constexpr,
++):
++    flat = tl.program_id(0)
++    req_state = tl.load(req_state_ptr + flat)
++    step = flat % num_steps
++    offsets = tl.arange(0, BLOCK_K)
++    mask = (req_state >= 0) & (offsets < top_k)
++    candidate_base = flat * top_k
++    cache_base = (req_state * num_steps + step) * top_k
++    old_token_ids = tl.load(cached_candidate_ptr + cache_base + offsets, mask=mask)
++    logits_base = (
++        draft_logits_ptr
++        + req_state * draft_logits_stride_0
++        + step * draft_logits_stride_1
++    )
++    tl.store(logits_base + old_token_ids, -float("inf"), mask=mask)
++    token_ids = tl.load(candidate_ptr + candidate_base + offsets, mask=mask)
++    scores = tl.load(scores_ptr + candidate_base + offsets, mask=mask)
++    tl.store(logits_base + token_ids, scores, mask=mask)
++    tl.store(cached_candidate_ptr + cache_base + offsets, token_ids, mask=mask)
++
++
++class DFlash2Speculator(DFlashSpeculator):
++    _speculator_name = "DFlash2"
++
++    def __init__(self, vllm_config: VllmConfig, device: torch.device):
++        super().__init__(vllm_config, device)
++        draft_config = self.draft_model_config.hf_config.dflash_config
++        self.selector_top_k = int(draft_config["selector_top_k"])
++        self._anchor_indices = (
++            torch.arange(self.max_num_reqs, dtype=torch.int64, device=device)
++            * self.num_query_per_req
++        )
++        self._selector_scores = torch.empty(
++            self.max_num_reqs,
++            self.num_speculative_steps,
++            self.selector_top_k,
++            dtype=torch.float32,
++            device=device,
++        )
++        self._cached_candidate_ids = torch.zeros(
++            self._selector_scores.shape, dtype=torch.int64, device=device
++        )
++
++    def draft_logits_spec(self, vllm_config: VllmConfig) -> tuple[torch.dtype, float]:
++        # fp32 so the walk and the rejection that checks it read the same
++        # distribution; -inf because the cache kernel writes only the K
++        # candidates.
++        return torch.float32, -float("inf")
++
++    def _sample_path(
++        self,
++        candidate_ids: torch.Tensor,
++        scores: torch.Tensor,
++        num_reqs: int,
++    ) -> None:
++        block_k = triton.next_power_of_2(self.selector_top_k)
++        _selector_walk_kernel[(num_reqs,)](
++            scores.contiguous(),
++            candidate_ids.contiguous(),
++            self.sample_pos,
++            self.sample_idx_mapping,
++            self.temperature,
++            self.seeds,
++            self.draft_tokens,
++            self._selector_scores,
++            num_steps=self.num_speculative_steps,
++            top_k=self.selector_top_k,
++            BLOCK_K=block_k,
++            SAMPLE_PROBABILISTIC=self.draft_logits is not None,
++            USE_FP64=self.use_fp64_gumbel,
++            num_warps=1,
++        )
++
++    def _cache_draft_logits(self, candidate_ids: torch.Tensor, num_sample: int) -> None:
++        draft_logits = self.draft_logits
++        assert draft_logits is not None
++        block_k = triton.next_power_of_2(self.selector_top_k)
++        _cache_draft_logits_kernel[(num_sample,)](
++            draft_logits,
++            self._cached_candidate_ids,
++            candidate_ids,
++            self._selector_scores,
++            self.sample_idx_mapping,
++            draft_logits.stride(0),
++            draft_logits.stride(1),
++            num_steps=self.num_speculative_steps,
++            top_k=self.selector_top_k,
++            BLOCK_K=block_k,
++            num_warps=1,
++        )
++
++    def _generate_draft(
++        self,
++        num_reqs: int,
++        num_tokens_padded: int,
++        attn_metadata: dict[str, Any] | None,
++        slot_mappings: dict[str, torch.Tensor] | None,
++        num_tokens_across_dp: torch.Tensor | None,
++        cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
++    ) -> None:
++        last_hidden_states = self._run_model(
++            num_tokens_padded,
++            attn_metadata,
++            slot_mappings,
++            num_tokens_across_dp,
++            cudagraph_runtime_mode,
++        )
++        num_sample = num_reqs * self.num_speculative_steps
++        hidden_states = last_hidden_states[self.sample_indices[:num_sample]].view(
++            num_reqs, self.num_speculative_steps, -1
++        )
++        candidate_ids, unary_logits = self.model.compute_candidates(
++            hidden_states.flatten(0, 1)
++        )
++        candidate_ids = candidate_ids.view(
++            num_reqs, self.num_speculative_steps, self.selector_top_k
++        )
++        unary_logits = unary_logits.view_as(candidate_ids)
++        anchor_token_ids = self.input_buffers.input_ids[self._anchor_indices[:num_reqs]]
++        scores = self.model.model.candidate_selector(
++            candidate_ids,
++            unary_logits,
++            hidden_states,
++            anchor_token_ids,
++        )
++        self._sample_path(candidate_ids, scores, num_reqs)
++        if self.draft_logits is not None:
++            self._cache_draft_logits(candidate_ids, num_sample)
+diff --git a/vllm/v1/worker/gpu/spec_decode/speculator.py b/vllm/v1/worker/gpu/spec_decode/speculator.py
+index 34f9925940c89c437ddc8889144cfd0108f8060a..bbd7eafcb5d8ec544225eb14fb85bfb9f9796daa 100644
+--- a/vllm/v1/worker/gpu/spec_decode/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/speculator.py
+@@ -129,11 +129,15 @@ class DraftModelSpeculator(BaseSpeculator):
+ 
+         self.draft_logits: torch.Tensor | None = None
+         if self.speculative_config.draft_sample_method == "probabilistic":
+-            self.draft_logits = torch.zeros(
+-                self.max_num_reqs,
+-                self.num_speculative_steps,
+-                self.vocab_size,
+-                dtype=torch.float32,
++            dtype, fill = self.draft_logits_spec(vllm_config)
++            self.draft_logits = torch.full(
++                (
++                    self.max_num_reqs,
++                    self.num_speculative_steps,
++                    self.vocab_size,
++                ),
++                fill,
++                dtype=dtype,
+                 device=device,
+             )
+ 
+@@ -269,6 +273,14 @@ class DraftModelSpeculator(BaseSpeculator):
+         )
+         return attn_metadata
+ 
++    def draft_logits_spec(self, vllm_config: VllmConfig) -> tuple[torch.dtype, float]:
++        """Dtype and fill for the cached proposal distribution.
++
++        Keep the fork's existing fp32 default. Speculators that write only a
++        subset of vocabulary columns each step can override the fill value.
++        """
++        return torch.float32, 0.0
++
+     def _validate_local_argmax_reduction(self) -> None:
+         if not self.use_local_argmax_reduction:
+             return

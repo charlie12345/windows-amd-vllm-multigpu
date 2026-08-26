@@ -239,6 +239,200 @@ remaining disk while being saved; eager MTP completed normally. The downloaded
 BF16 checkpoint was removed after the trial, as required by the sequential
 BF16, FP8, and 4-bit test plan.
 
+## Qwen3.8-27B native FP8 format trial
+
+`Qwen/Qwen3.8-27B-FP8` revision
+`017b9c7af6b5689d5dd426a76e0bc077eb5ca20a` contains 66 SafeTensors weight
+shards totaling 30,866,866,928 bytes (28.75 GiB). Its model metadata declares
+native `fp8` quantization, dynamic activation scaling, and 128-by-128 weight
+blocks. vLLM selected `TritonFp8BlockScaledMMKernel`; no GGUF loader or
+conversion was used.
+
+The TP2 dummy preflight passed model construction, FP8 kernel selection,
+Windows RCCL initialization, KV-cache creation, and token generation. The real
+checkpoint loaded about 14.45 GiB of model memory on each GPU. A traced hybrid
+run emitted D3D12 AllReduce and RCCL AllGather records on both ranks, proving
+that the transport split was active. TP1 loaded 28.50 GiB of model data but had
+negative remaining KV-cache capacity at 98% utilization, so a fully GPU-resident
+single-R9700 comparison was not possible.
+
+### Sustained batch-1 decode
+
+The primary comparison used 32 input tokens, 128 output tokens, two warmups,
+four measured iterations, eager/O0, BF16 activations, automatic attention, no
+prefix cache, a 512-token limit, and 60% GPU-memory utilization. Approximate
+output tokens/s is `128 / average latency` and includes prefill, so it is a
+conservative sustained-decode estimate rather than time-per-output-token from
+an HTTP serving trace.
+
+| Configuration | Average | p50 | p90 | Approx. output tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| TP2 D3D12 AllReduce + RCCL AllGather | 31.5488 s | 31.5229 s | 31.6158 s | 4.06 |
+| TP2 RCCL-only | 30.7916 s | 30.7916 s | 30.8047 s | 4.16 |
+
+RCCL-only was 2.46% faster on this workload. The result does not imply that
+D3D12 is universally slower: the bridge wins for some larger collective
+payloads, while the FP8 checkpoint reduces compute and communication sizes.
+
+### Short-run tuning and failures
+
+The 32-input/32-output, batch-1 tests used three warmups and six measured
+iterations unless noted. Two otherwise identical baseline pairs showed large
+cross-launch variance, which is why they are not used as the primary headline:
+
+| Run | Average | Approx. output tokens/s |
+| --- | ---: | ---: |
+| Hybrid eager/O0, first | 5.8756 s | 5.45 |
+| RCCL eager/O0, first | 6.1363 s | 5.21 |
+| Hybrid eager/O0, repeat | 7.0903 s | 4.51 |
+| RCCL eager/O0, repeat | 7.0478 s | 4.54 |
+| Hybrid async eager | 6.8833 s | 4.65 |
+| Hybrid async + O1 | 7.2764 s | 4.40 |
+| Hybrid forced `TRITON_ATTN` | 7.1550 s | 4.47 |
+| Hybrid with rejected local FP8 GEMM configs | 7.4449 s | 4.30 |
+
+The O1 engine spent 392.34 seconds compiling and still lost steady-state
+performance. Five R9700 FP8 GEMM shapes were micro-tuned, but their end-to-end
+result regressed, so the generated configs were removed and are not shipped.
+One-token MTP failed when both ranks raced on the same Triton cache metadata
+file; the exact error was `PermissionError` on a newly compiled
+`_causal_conv1d_update_kernel.json`. After many process restarts, WDDM/HIP also
+began rejecting small allocations despite reporting ample free VRAM. A clean
+prefill result was therefore not fabricated or reported. Full local console
+logs are ignored by Git, while this failure description is retained for
+reproducibility.
+
+The FP8 checkpoint was removed after its results, revision, format, license,
+and exact byte count were recorded.
+
+## Qwen3.8-27B NVFP4 compatibility trial
+
+`unsloth/Qwen3.8-27B-NVFP4` revision
+`9e3d73c76eddb75f795cc24ccfbc5affe41c66bd` contains native
+compressed-tensors SafeTensors weights totaling 23,417,592,488 bytes
+(21.81 GiB), including its MTP weights. This was not GGUF. However, NVFP4 is
+an NVIDIA-oriented number format and this ROCm RDNA4 runtime selected
+`EmulationNvFp4LinearKernel` for the NVFP4 linear layers. FP8 layers selected
+`ChannelWiseTorchFP8ScaledMMLinearKernel`. The checkpoint therefore validated
+format compatibility, not an optimized AMD 4-bit execution path.
+
+The comparable eager runs used 32 input and 32 output tokens, batch 1,
+automatic `ROCM_ATTN`, BF16 activations, and a 512-token model limit. TP1
+loaded 20.35 GiB of model memory; TP2 loaded about 10.32 GiB per worker.
+
+| Configuration | Average | p50 | p90 | Approx. output tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| TP1 eager/O0 | 30.3618 s | 30.3618 s | 30.3985 s | 1.05 |
+| TP2 RCCL eager/O0 | 18.6866 s | 18.6866 s | 18.7281 s | 1.71 |
+| TP2 D3D12 AllReduce + RCCL AllGather eager/O0 | 18.2876 s | 18.2876 s | 18.2893 s | 1.75 |
+
+TP2 RCCL was 1.63x and hybrid TP2 was 1.67x faster than the paired TP1
+baseline. This proves that both GPUs participated, but the absolute result is
+poor because each GPU emulated NVFP4 arithmetic. The two-iteration transport
+comparison is provisional; hybrid was 2.18% faster than RCCL-only in that
+short run.
+
+Additional TP1 tests did not fix the kernel bottleneck: async eager reached
+1.06 tokens/s, forced `TRITON_ATTN` also reached 1.06 tokens/s, one-token MTP
+reached 1.05 tokens/s, and O2 graph capture reached only 0.86 tokens/s after a
+430-second first compile. The attention result confirms that attention was
+not the dominant bottleneck. All successful and failed starts used the
+cooperative Windows engine shutdown path and a post-run GPU-process-memory
+audit found no exited process retaining a vLLM allocation.
+
+The NVFP4 checkpoint was removed after this compatibility result was recorded.
+The replacement 4-bit test uses compressed-tensors W4A16 INT4 group-128 so it
+can select the native RDNA hybrid INT4 kernel.
+
+## Qwen3.8-27B W4A16 and DFlash2 trial
+
+The replacement 4-bit checkpoint was
+`abihsoro/Qwen3.8-27B-AWQ-INT4` revision
+`f2e0cac39907e7b1ed7fdb210363dd33cc18f993`. It contains one
+17,646,863,912-byte SafeTensors file using compressed-tensors W4A16 INT4,
+group size 128, symmetric weights, and BF16 activations. Every successful run
+reported `RDNAHybridW4A16LinearKernel for CompressedTensorsWNA16`; this was not
+GGUF, NVFP4 emulation, or a runtime conversion.
+
+### Non-speculative W4A16 results
+
+The batch-1 decode runs used 32 input tokens, 128 output tokens, three warmups,
+ten measured iterations, BF16 activations, and a 512-token model limit.
+
+| Configuration | Average | p50 | p90 | Output tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| TP1 eager/O0 | 4.7218 s | 4.7276 s | 4.7720 s | 27.11 |
+| TP1 async eager | 4.0039 s | 4.0058 s | 4.0458 s | **31.97** |
+| TP1 async + O1 | 5.0841 s | 5.0872 s | 5.0903 s | 25.18 |
+| TP2 RCCL eager/O0 | 6.0356 s | 6.0135 s | 6.1505 s | 21.21 |
+| TP2 RCCL async eager | 5.5275 s | 5.5246 s | 5.5613 s | 23.16 |
+| TP2 RCCL async + O1 | 4.3613 s | 4.3089 s | 4.5266 s | **29.35** |
+| TP2 hybrid eager/O0 | 6.8936 s | 6.9268 s | 7.0562 s | 18.57 |
+
+For a single request, TP1 async eager was 8.2% faster than the best TP2
+configuration. The batch-8 async-eager comparison reversed that tradeoff: TP1
+processed 1,024 output tokens in 15.5680 seconds (65.78 aggregate tokens/s),
+while TP2 RCCL took 12.5120 seconds (81.84 aggregate tokens/s), a 24.4% gain.
+With a roughly 4K-token input, TP1 prefill was about 1,242.82 tokens/s and TP2
+RCCL was about 863.27 tokens/s. These results keep decode, aggregate throughput,
+and prefill claims separate.
+
+### DFlash2 compatibility and performance
+
+The official `z-lab/Qwen3.8-27B-DFlash2` drafter was pinned at
+`50307d4c4cde6860d4eee73e2547cd786fe8e8a4`. Its weight file is
+3,848,817,896 bytes and its declared license is Apache-2.0. The vLLM adaptation
+comes from upstream DFlash2 merge `b389ac29465b33f9e9c534df221ea3c129e9793f`
+plus initialization fix `fc316015ffe337b61498555e3ee983bc6304904b`.
+
+Initial startup with an automatic `ROCM_ATTN` target and `TRITON_ATTN` draft
+failed in `_restride_blocks_first_kv_cache_to_kv_first_storage` because the
+shared speculative KV allocation mixed K/V-first and fused blocks-first
+layouts. This is the same class of open upstream ROCm issue documented in
+vLLM issue 50237 and PR 50247. Matching both target and drafter to
+`TRITON_ATTN` is the safe current workaround; the local launcher applies it by
+default rather than weakening a layout assertion.
+
+All performance rows used 32 input tokens, 128 output tokens, BF16 activations,
+the real W4A16 target weights, and the real BF16 DFlash2 drafter. Run counts are
+shown because the expensive negative arms intentionally used shorter samples.
+
+| Configuration | Runs | Average | p50 | p90 | Output tokens/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| TP1 V2+Triton control, no speculation | 10 | 4.9296 s | 4.4396 s | 6.4099 s | **25.97** |
+| TP1 DFlash2, 1 speculative token | 5 | 6.2148 s | 6.2584 s | 6.4063 s | 20.60 |
+| TP1 DFlash2, 7 speculative tokens | 10 | 30.0670 s | 28.4556 s | 38.0663 s | 4.26 |
+| TP2 RCCL V2+Triton control, no speculation | 5 | 8.7366 s | 8.7529 s | 9.0111 s | **14.65** |
+| TP2 RCCL DFlash2, 7 speculative tokens | 5 | 22.3202 s | 19.6244 s | 28.4301 s | 5.73 |
+| TP2 D3D12 AllReduce + RCCL AllGather DFlash2, 7 tokens | 3 | 24.8854 s | 25.5547 s | 25.6750 s | 5.14 |
+
+DFlash2 was functional but not an acceleration. Depth 1 was 20.7% slower than
+its matched TP1 control, and depth 7 was 83.6% slower. TP2 RCCL improved the
+depth-7 path by 34.5% over TP1, proving useful parallel compute, but remained
+60.9% slower than the matched TP2 control. RCCL-only was 11.5% faster than the
+hybrid result by tokens/s.
+
+Transport traces on both TP2 ranks proved RCCL AllReduce and AllGather for the
+RCCL arm. The hybrid arm proved D3D12 AllReduce and RCCL AllGather. Gloo was the
+CPU bootstrap/control process group, not the tensor payload path. Every arm
+shut down cooperatively, and the final Windows GPU-process-memory audit found
+no orphaned Python/vLLM allocation.
+
+### Windows launcher root cause and fix
+
+The earlier apparent V2/Gloo startup hang was a launcher failure. Windows
+PowerShell 5.1 converts merged native stderr into PowerShell error records.
+PyTorch emits a harmless c10d IPv4-mapped IPv6 warning during Gloo startup, and
+the benchmark's script-wide `ErrorActionPreference = Stop` terminated the vLLM
+client on that warning. Its healthy spawned EngineCore then became orphaned,
+which explained both the apparent process-group hang and ghost VRAM symptoms.
+
+The launcher now temporarily allows native stderr records, converts them back
+to plain log text, waits for vLLM to exit, and checks `$LASTEXITCODE`. V1 and V2
+dummy controls both initialized, generated, and performed cooperative shutdown
+after this change. The standalone Gloo probe also passes in-process and in a
+fresh Windows spawned child, with or without CUDA initialization.
+
 ## Historical BF16 large-model TP2 validation
 
 The earlier large-model validation used

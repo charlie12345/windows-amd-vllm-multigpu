@@ -390,6 +390,146 @@ The BF16 checkpoint was deleted after recording the results. It is not
 distributed by this repository and can be restored only by downloading the
 pinned Hugging Face revision again.
 
+### Qwen3.8-27B native FP8 trial
+
+The official Apache-2.0
+[`Qwen/Qwen3.8-27B-FP8`](https://huggingface.co/Qwen/Qwen3.8-27B-FP8)
+checkpoint was tested at revision
+`017b9c7af6b5689d5dd426a76e0bc077eb5ca20a`. Its 66 native SafeTensors
+weight shards total 30,866,866,928 bytes (28.75 GiB) and declare vLLM's `fp8`
+quantization with dynamic activations and 128-by-128 weight blocks. This was
+not a GGUF conversion.
+
+TP1 loaded all 28.50 GiB of model data but could not allocate a usable KV
+cache on one 31.86 GiB R9700. TP2 loaded about 14.45 GiB per worker and ran
+successfully. Collective tracing verified that hybrid mode routed AllReduce
+through the D3D12 cross-adapter bridge and AllGather through Windows RCCL.
+
+The sustained decode comparison used 32 input tokens, 128 generated tokens,
+batch 1, eager/O0, BF16 activations, automatic `ROCM_ATTN`, a 512-token model
+limit, no prefix cache, and 60% GPU-memory utilization. The lower utilization
+still provides ample KV capacity for this workload and avoids Windows WDDM
+overcommit after repeated engine restarts.
+
+| Configuration | Average | p50 | p90 | Output tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| TP2 D3D12 AllReduce + RCCL AllGather | 31.5488 s | 31.5229 s | 31.6158 s | 4.06 |
+| TP2 RCCL-only | **30.7916 s** | **30.7916 s** | **30.8047 s** | **4.16** |
+
+RCCL-only was 2.46% faster than hybrid for sustained batch-1 FP8 decode, so it
+is the recommended transport for this checkpoint on the tested two-R9700
+machine. Short 32-output-token runs varied by about 20% across repeated engine
+launches and are retained in `docs/results.md` rather than advertised as the
+primary number. Async eager, O1, forced `TRITON_ATTN`, and locally tuned FP8
+GEMM configurations all lost to eager/O0 with automatic attention. MTP exposed
+a two-rank Windows Triton-cache race and is not recommended for this format.
+
+Reproduce the sustained FP8 run with:
+
+```powershell
+.\scripts\benchmark-qwen38-27b.ps1 `
+    -ModelPath G:\AI-models\Qwen3.8-27B-FP8 `
+    -ModelLabel fp8-longdecode `
+    -Transport Rccl `
+    -Profile Baseline `
+    -InputLen 32 `
+    -OutputLen 128 `
+    -BatchSize 1 `
+    -WarmupIterations 2 `
+    -Iterations 4 `
+    -MaxModelLen 512 `
+    -MaxNumBatchedTokens 512 `
+    -GpuMemoryUtilization 0.60
+```
+
+The FP8 checkpoint was deleted after this sequential format trial. Model
+weights and local benchmark logs are not distributed by this repository.
+
+### Qwen3.8-27B standard 4-bit W4A16 trial
+
+NVFP4 is not the AMD performance target for this project. The native
+SafeTensors `unsloth/Qwen3.8-27B-NVFP4` checkpoint loaded correctly, but vLLM
+selected `EmulationNvFp4LinearKernel` on the R9700. It reached only 1.05
+tokens/s on TP1, 1.71 tokens/s on TP2 RCCL, and 1.75 tokens/s on TP2 hybrid
+for a 32-input/32-output batch-1 test. Those results prove tensor-parallel
+execution but do not represent optimized AMD 4-bit inference. Full numbers
+and test qualifications are in `docs/results.md`.
+
+The replacement is the Apache-2.0
+[`abihsoro/Qwen3.8-27B-AWQ-INT4`](https://huggingface.co/abihsoro/Qwen3.8-27B-AWQ-INT4)
+checkpoint pinned at `f2e0cac39907e7b1ed7fdb210363dd33cc18f993`.
+It is one 17,646,863,912-byte SafeTensors weight file using the standard
+compressed-tensors `pack-quantized` W4A16 schema: INT4 group-128 symmetric
+weights with BF16 activations. It is not GGUF, NVFP4, or a runtime conversion.
+
+Download and validate the exact checkpoint on `G:` with:
+
+```powershell
+.\.venv-vllm\Scripts\python.exe .\scripts\download-qwen38-27b-awq.py
+```
+
+The downloader validates the Hugging Face commit, declared Apache-2.0 license,
+weight byte count, architecture, packing format, bit width, group size, and
+activation scheme. During preflight, do not accept the checkpoint as optimized
+unless the runtime reports
+`Using RDNAHybridW4A16LinearKernel for CompressedTensorsWNA16`. That kernel
+keeps INT4 weights packed and dispatches decode shapes to the HIP skinny GEMM
+and larger prefill shapes to the tuned Triton W4A16 GEMM.
+
+The primary 32-input/128-output batch-1 results were:
+
+| Configuration | Average | Output tokens/s |
+| --- | ---: | ---: |
+| TP1 eager/O0 | 4.7218 s | 27.11 |
+| TP1 async eager | 4.0039 s | **31.97** |
+| TP1 async + O1 | 5.0841 s | 25.18 |
+| TP2 RCCL eager/O0 | 6.0356 s | 21.21 |
+| TP2 RCCL async eager | 5.5275 s | 23.16 |
+| TP2 RCCL async + O1 | 4.3613 s | **29.35** |
+| TP2 hybrid eager/O0 | 6.8936 s | 18.57 |
+
+For one request, TP1 async eager remains 8.2% faster than the best TP2 result.
+At batch 8, however, TP2 RCCL reached 81.84 aggregate output tokens/s versus
+65.78 on TP1, a 24.4% throughput gain. Tensor parallelism is therefore useful
+for capacity and concurrency even when communication overhead loses on a
+single short request.
+
+### DFlash2 result
+
+The official Apache-2.0
+[`z-lab/Qwen3.8-27B-DFlash2`](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2)
+drafter is pinned at `50307d4c4cde6860d4eee73e2547cd786fe8e8a4` and can be
+downloaded and validated with:
+
+```powershell
+.\.venv-vllm\Scripts\python.exe .\scripts\download-qwen38-27b-dflash2.py
+```
+
+The pinned vLLM patch adds upstream DFlash2 support and its initialization fix.
+On ROCm, the target and drafter must use matching attention backends; an
+automatic `ROCM_ATTN` target plus `TRITON_ATTN` drafter creates incompatible
+shared KV-cache layouts. The benchmark launcher now matches both to
+`TRITON_ATTN` by default and exposes `-DFlashAttentionBackend` for controlled
+experiments.
+
+The feature is correct and distributed, but it is not a speedup for this
+W4A16/RDNA4 path:
+
+| Configuration | Runs | Average | Output tokens/s |
+| --- | ---: | ---: | ---: |
+| TP1 V2+Triton, no speculation | 10 | 4.9296 s | **25.97** |
+| TP1 DFlash2, depth 1 | 5 | 6.2148 s | 20.60 |
+| TP1 DFlash2, depth 7 | 10 | 30.0670 s | 4.26 |
+| TP2 RCCL V2+Triton, no speculation | 5 | 8.7366 s | **14.65** |
+| TP2 RCCL DFlash2, depth 7 | 5 | 22.3202 s | 5.73 |
+| TP2 hybrid DFlash2, depth 7 | 3 | 24.8854 s | 5.14 |
+
+TP2 RCCL improved the seven-token DFlash path by 34.5% over TP1 and both ranks
+emitted RCCL AllReduce/AllGather traces, but it was still 60.9% slower than its
+matched non-speculative TP2 control. The hybrid used D3D12 AllReduce plus RCCL
+AllGather and was 10.3% slower than RCCL-only. DFlash2 remains experimental and
+off by default until AMD verification GEMMs and acceptance behavior are faster.
+
 ### Decode-related vLLM flags
 
 These settings are verified for this AWQ checkpoint and machine:
@@ -398,12 +538,14 @@ These settings are verified for this AWQ checkpoint and machine:
   RDNA W4A16 decode kernel. The environment variable currently defaults on,
   but setting it explicitly makes runs reproducible.
 - `--async-scheduling -O1 --compilation-config '{"compile_sizes":[]}'` is the
-  fastest tested TP2 profile. Async scheduling alone reached 36.43 tokens/s;
-  the full profile reached 37.99 tokens/s.
+  fastest tested TP2 single-request profile at 29.35 tokens/s. On TP1, async
+  eager was faster at 31.97 tokens/s, so do not assume one compile profile wins
+  on both topologies.
 - Keep `--dtype bfloat16`. An otherwise identical FP16 run reached only 36.15
   tokens/s.
-- Leave `--attention-backend` on `auto`; it selects `ROCM_ATTN`. Forcing
-  `TRITON_ATTN` reached only 35.67 tokens/s.
+- Leave `--attention-backend` on `auto` for normal decode so it can select
+  `ROCM_ATTN`. Use matching target/draft backends for DFlash2; the launcher
+  defaults that experiment to `TRITON_ATTN` for ROCm correctness.
 - Use RCCL-only (`WAVMG_USE_D3D12=0`) for this quantized model. Its small
   reductions do not amortize the D3D12 cross-adapter route. This is
   workload-specific: D3D12 was substantially faster for the earlier BF16
@@ -452,6 +594,30 @@ Exact PyTorch, ROCm, RCCL, HIPIFY, vLLM, and large-model revisions are recorded
 in [pins/nightly-2026-07-28.json](pins/nightly-2026-07-28.json). The RCCL and
 vLLM patch scripts verify both the upstream commit and patch applicability
 before modifying ignored sandbox clones.
+
+The Windows vLLM patch set also adds cooperative EngineCore shutdown. Python's
+`multiprocessing.Process.terminate()` maps to `TerminateProcess` on Windows and
+does not run Python's SIGTERM handlers; without the patch, repeatedly launching
+`vllm bench latency` can orphan TP workers and leave their HIP contexts charged
+to WDDM even after the PIDs disappear. The patch sends a spawn-safe shutdown
+event first, lets EngineCore release workers and GPU resources normally, and
+retains forced termination only as a timeout fallback. Validate the primitive
+with:
+
+```powershell
+.\.venv-vllm\Scripts\python.exe .\probes\probe_windows_engine_shutdown.py
+```
+
+The Qwen benchmark launcher also handles a Windows PowerShell 5.1 edge case:
+native stderr becomes a PowerShell error record when merged into the log
+pipeline. PyTorch's harmless c10d IPv4-mapped IPv6 warning previously met the
+script-wide `Stop` policy, terminated the client, and left a healthy EngineCore
+orphaned. The launcher now preserves native stderr as text, waits for vLLM, and
+uses the native exit code as the authoritative result.
+
+If a run made before this patch already left nonexistent PIDs in the Windows
+`GPU Process Memory` counters, a normal reboot or elevated display-adapter
+restart is required once to clear those driver allocations.
 
 This remains experimental. Current limits include exactly two ranks for the
 D3D12 fast path, no driver-level VRAM P2P, no peer-death GPU watchdog, no

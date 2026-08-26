@@ -1,5 +1,6 @@
 Windows AMD vLLM Multi-GPU
 
+Copyright 2026 Carlo Pasquale (GitHub: @charlie12345).
 Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
@@ -9,8 +10,9 @@ which is licensed under the Apache License, Version 2.0:
 https://github.com/vllm-project/vllm
 The exact LICENSE and NOTICE from the pinned vLLM fork revision are reproduced
 as LICENSES/VLLM-UPSTREAM-LICENSE.txt and
-LICENSES/VLLM-UPSTREAM-NOTICE.txt. The patch under patches/vllm modifies the
-three files identified in that patch; it is not an unmodified upstream work.
+LICENSES/VLLM-UPSTREAM-NOTICE.txt. The version-locked patches under
+patches/vllm identify every modified file; this is not an unmodified upstream
+work.
 
 The optional native RCCL build is based on AMD RCCL and NVIDIA NCCL source.
 RCCL/NCCL-derived source patches and binaries remain subject to their
@@ -52,3 +54,11 @@ The Qwen3.8-27B BF16 benchmark used Qwen/Qwen3.8-27B revision
 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0. Its model card declares
 Apache-2.0. Those weights were deleted after the benchmark and are not
 distributed by this repository.
+
+The current Qwen3.8-27B W4A16 benchmark uses
+abihsoro/Qwen3.8-27B-AWQ-INT4 revision
+f2e0cac39907e7b1ed7fdb210363dd33cc18f993. The DFlash2 compatibility test uses
+z-lab/Qwen3.8-27B-DFlash2 revision
+50307d4c4cde6860d4eee73e2547cd786fe8e8a4. Their model cards declare
+Apache-2.0. Both are downloaded directly to local storage, retain their target
+model attribution, and are not distributed by this repository.
