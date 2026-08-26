@@ -318,6 +318,53 @@ Run `scripts\benchmark-ling3.ps1` to reproduce all three cases. O1 required a
 local fix so dynamic compile ranges remain selectable when concrete
 `compile_sizes` is unset; that fix is part of the version-locked patch stack.
 
+### Ling concurrent-serving benchmark
+
+vLLM continuous batching does not load another copy of the model for every
+request. One loaded engine keeps several sequences active and batches their
+decode steps. This can greatly increase aggregate output throughput, although
+each individual stream can receive tokens more slowly as concurrency rises.
+
+The same pinned BF16 checkpoint was served through the OpenAI-compatible HTTP
+endpoint with O1, async scheduling, a 32-token random input, 128 forced output
+tokens, and prefix caching disabled. Each concurrency received a complete
+warmup wave before measurement. Concurrency 1-4 used 16 measured requests;
+concurrency 8-16 used 32. The August 26, 2026 results were:
+
+| Concurrent requests | TP1 output tok/s | TP1 mean TTFT | TP1 mean TPOT | TP2 RCCL output tok/s | TP2 mean TTFT | TP2 mean TPOT |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 33.56 | 174.69 ms | 28.66 ms | 25.29 | 160.87 ms | 38.59 ms |
+| 2 | 48.91 | 340.34 ms | 38.53 ms | 51.44 | 257.86 ms | 37.12 ms |
+| 4 | 106.02 | 296.90 ms | 35.69 ms | 107.42 | 312.04 ms | 35.02 ms |
+| 8 | 83.77 | 330.91 ms | 93.62 ms | 89.56 | 433.86 ms | 86.55 ms |
+| 16 | **160.59** | 349.10 ms | 97.63 ms | **164.54** | 460.61 ms | 94.24 ms |
+
+On TP1, concurrency 16 produced 4.79 times the aggregate output rate of
+concurrency 1. Concurrency 4 was the better latency/throughput compromise,
+while 16 maximized total output. The non-monotonic concurrency-8 result is a
+real measurement for these RDNA 4 Triton/MoE batch shapes and should be repeated
+before treating it as a general rule. TP2 RCCL was only 2.5% faster than TP1 at
+concurrency 16, so sharding this model is primarily useful for memory capacity;
+RCCL overhead prevents two-times scaling. Gloo performed rendezvous/control
+only; the traced GPU tensor collectives used RCCL on both ranks.
+
+Start the matching server in the first PowerShell window, wait for its health
+endpoint to become ready, and run the client-side load matrix in a second:
+
+```powershell
+# Window 1: replace Single with Rccl for TP2 RCCL-only
+.\scripts\serve-ling3.ps1 -Mode Single
+
+# Window 2
+.\scripts\benchmark-ling3-concurrency.ps1 `
+    -BaseUrl http://127.0.0.1:8001
+```
+
+For maximum independent-request throughput when the whole model fits one GPU,
+two separate TP1 replicas behind a load balancer are expected to scale better
+than TP2. That replica mode is distinct from tensor parallelism and is not
+claimed by the table above.
+
 ## Large-model proof of tensor parallelism
 
 The pinned large test is

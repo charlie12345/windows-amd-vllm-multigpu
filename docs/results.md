@@ -470,6 +470,30 @@ is therefore a conservative approximation of steady decode:
 | TP2 RCCL-only | 4.8955 s | 4.9824 s | **26.15** |
 | TP2 D3D12 + RCCL | 5.8652 s | 6.0914 s | **21.82** |
 
+The same checkpoint was also tested through `vllm serve` and `vllm bench
+serve` to measure continuous batching. Inputs were 32 tokens and outputs were
+forced to 128 tokens with `--ignore-eos`. O1, async scheduling, and the same
+memory limits remained active. A full concurrency-sized warmup wave was not
+included in the measurements.
+
+| Concurrency | TP1 output tok/s | TP1 mean TTFT (ms) | TP1 mean TPOT (ms) | TP2 RCCL output tok/s | TP2 mean TTFT (ms) | TP2 mean TPOT (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 33.56 | 174.69 | 28.66 | 25.29 | 160.87 | 38.59 |
+| 2 | 48.91 | 340.34 | 38.53 | 51.44 | 257.86 | 37.12 |
+| 4 | 106.02 | 296.90 | 35.69 | 107.42 | 312.04 | 35.02 |
+| 8 | 83.77 | 330.91 | 93.62 | 89.56 | 433.86 | 86.55 |
+| 16 | **160.59** | 349.10 | 97.63 | **164.54** | 460.61 | 94.24 |
+
+All 224 measured requests completed successfully. TP1 concurrency 16 improved
+aggregate output throughput by 378.5% over TP1 concurrency 1, but its mean TPOT
+rose from 28.66 to 97.63 ms. The TP2 concurrency-16 result was 2.5% above TP1,
+which does not justify tensor parallelism for throughput alone on a checkpoint
+that fits comfortably on one R9700. Transport markers on both ranks confirmed
+RCCL payload collectives; the Gloo process group remained the control plane.
+The unusual concurrency-8 dip was retained rather than smoothed or discarded.
+Repeated runs and more realistic prompt distributions are needed before using
+that point for capacity planning.
+
 O1 originally failed during profile execution because
 `PiecewiseBackend._find_range_for_shape()` returned early whenever
 `compile_sizes` was `None`, even though a valid dynamic range existed. The
