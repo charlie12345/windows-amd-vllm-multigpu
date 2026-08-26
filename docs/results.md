@@ -377,6 +377,66 @@ With a roughly 4K-token input, TP1 prefill was about 1,242.82 tokens/s and TP2
 RCCL was about 863.27 tokens/s. These results keep decode, aggregate throughput,
 and prefill claims separate.
 
+### Concurrent OpenAI serving
+
+The online serving benchmark used the same W4A16 target, 32 random input
+tokens, 128 output tokens with EOS ignored, BF16 activations, automatic ROCm
+attention, async scheduling, eager/O0, no prefix caching, and a 512-token
+scheduler. Low-concurrency rows used eight measured requests, concurrency 8
+used 16, concurrency 16 used 32, and concurrency 32 used 64. Each batch-size
+specialization received a full warmup wave, which is excluded from the timing.
+
+| Concurrency | Topology | Output tok/s | Total tok/s | Mean TTFT | Mean TPOT | p99 ITL |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | TP1 | 21.31 | 26.64 | 127.90 ms | 46.28 ms | 58.97 ms |
+| 1 | TP2 RCCL | 13.65 | 17.06 | 171.00 ms | 72.48 ms | 214.32 ms |
+| 2 | TP1 | 36.51 | 45.63 | 209.42 ms | 53.47 ms | 67.65 ms |
+| 2 | TP2 RCCL | 25.62 | 32.03 | 295.67 ms | 76.21 ms | 218.87 ms |
+| 4 | TP1 | 73.74 | 92.18 | 246.12 ms | 52.61 ms | 68.96 ms |
+| 4 | TP2 RCCL | 49.62 | 62.02 | 403.82 ms | 77.91 ms | 233.84 ms |
+| 8 | TP1 | 66.65 | 83.32 | 385.59 ms | 117.76 ms | 118.54 ms |
+| 8 | TP2 RCCL | 69.52 | 86.90 | 634.22 ms | 110.87 ms | 277.54 ms |
+| 16 | TP1 | 125.16 | 156.45 | 613.87 ms | 123.94 ms | 124.90 ms |
+| 16 | TP2 RCCL | 119.15 | 148.93 | 842.16 ms | 128.64 ms | 293.38 ms |
+| 32 | TP1 | 170.48 | 213.10 | 780.45 ms | 182.62 ms | 183.52 ms |
+| 32 | TP2 RCCL | **179.73** | **224.66** | 1,067.01 ms | **170.65 ms** | 337.30 ms |
+
+TP1 scaled from 21.31 to 170.48 output tok/s between concurrency 1 and 32.
+TP2 did not win monotonically: it was communication-bound at low load, edged
+TP1 by 4.3% at concurrency 8, lost by 4.8% at concurrency 16, and won by 5.4%
+at concurrency 32. The last TP2 row also improved mean TPOT by 6.6% versus TP1,
+but raised TTFT by 36.7% and had higher tail ITL. This makes TP1 the default
+for interactive traffic and TP2 RCCL the measured aggregate-throughput choice
+only at sufficiently high concurrency.
+
+Both TP2 ranks emitted `WAVMG_TRANSPORT` declarations for RCCL AllReduce and
+other collectives, followed by traced RCCL AllReduce and AllGather operations.
+The PyTorch Gloo group remained a CPU bootstrap/control plane and did not carry
+the tensor payloads.
+
+### Native MTP experiment
+
+The W4A16 checkpoint has `mtp_num_hidden_layers=1` in its configuration but no
+`mtp.*` tensors in its 1,843-tensor weight file. The pinned official
+`Qwen/Qwen3.8-27B` shard 18 contains 15 MTP tensors totaling 849,398,784 bytes.
+The reproducible builder created a 5,934,994,456-byte standalone SafeTensors
+draft containing those official MTP weights plus the target-compatible BF16
+embedding and LM head. All generated weights remain outside Git.
+
+Two compatibility defects were fixed and covered by six passing focused tests:
+Qwen `qwen3_5_text`/`qwen3_5_moe_text` configs now dispatch to the proper MTP
+architectures, and an explicit BF16 EAGLE/MTP draft resolves its own
+quantization instead of inheriting the INT4 target's packed parameters. With
+those changes the target and draft both loaded, and vLLM shared the target
+embedding and LM head with the draft.
+
+The first Windows ROCm profile still failed in the Qwen full-attention M-RoPE
+path: the HIP rotary operation received query/key tensors whose token shape did
+not match the 3-D position tensor. This is a real runtime blocker, not a
+performance result. Upstream's current Qwen3.5 recipe says MTP-1 on AMD is
+under development. MTP is therefore kept experimental and disabled; the
+non-speculative concurrency table is the valid result.
+
 ### DFlash2 compatibility and performance
 
 The official `z-lab/Qwen3.8-27B-DFlash2` drafter was pinned at

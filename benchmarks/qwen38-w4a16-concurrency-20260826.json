@@ -1,0 +1,138 @@
+{
+  "date": "2026-08-26",
+  "model": "abihsoro/Qwen3.8-27B-AWQ-INT4",
+  "revision": "f2e0cac39907e7b1ed7fdb210363dd33cc18f993",
+  "format": "compressed-tensors W4A16 INT4 group-128 symmetric",
+  "input_tokens": 32,
+  "output_tokens": 128,
+  "ignore_eos": true,
+  "dtype": "bfloat16",
+  "max_model_len": 512,
+  "max_num_batched_tokens": 512,
+  "max_num_seqs": 32,
+  "attention_backend": "auto (ROCM_ATTN decode)",
+  "profile": "async scheduling, eager, O0, prefix caching disabled",
+  "tp2_transport": "RCCL AllReduce and AllGather; Gloo CPU control plane only",
+  "results": [
+    {
+      "topology": "TP1",
+      "concurrency": 1,
+      "requests": 8,
+      "output_tokens_per_second": 21.31,
+      "total_tokens_per_second": 26.64,
+      "mean_ttft_ms": 127.90,
+      "mean_tpot_ms": 46.28,
+      "p99_itl_ms": 58.97
+    },
+    {
+      "topology": "TP1",
+      "concurrency": 2,
+      "requests": 8,
+      "output_tokens_per_second": 36.51,
+      "total_tokens_per_second": 45.63,
+      "mean_ttft_ms": 209.42,
+      "mean_tpot_ms": 53.47,
+      "p99_itl_ms": 67.65
+    },
+    {
+      "topology": "TP1",
+      "concurrency": 4,
+      "requests": 8,
+      "output_tokens_per_second": 73.74,
+      "total_tokens_per_second": 92.18,
+      "mean_ttft_ms": 246.12,
+      "mean_tpot_ms": 52.61,
+      "p99_itl_ms": 68.96
+    },
+    {
+      "topology": "TP1",
+      "concurrency": 8,
+      "requests": 16,
+      "output_tokens_per_second": 66.65,
+      "total_tokens_per_second": 83.32,
+      "mean_ttft_ms": 385.59,
+      "mean_tpot_ms": 117.76,
+      "p99_itl_ms": 118.54
+    },
+    {
+      "topology": "TP1",
+      "concurrency": 16,
+      "requests": 32,
+      "output_tokens_per_second": 125.16,
+      "total_tokens_per_second": 156.45,
+      "mean_ttft_ms": 613.87,
+      "mean_tpot_ms": 123.94,
+      "p99_itl_ms": 124.90
+    },
+    {
+      "topology": "TP1",
+      "concurrency": 32,
+      "requests": 64,
+      "output_tokens_per_second": 170.48,
+      "total_tokens_per_second": 213.10,
+      "mean_ttft_ms": 780.45,
+      "mean_tpot_ms": 182.62,
+      "p99_itl_ms": 183.52
+    },
+    {
+      "topology": "TP2_RCCL",
+      "concurrency": 1,
+      "requests": 8,
+      "output_tokens_per_second": 13.65,
+      "total_tokens_per_second": 17.06,
+      "mean_ttft_ms": 171.00,
+      "mean_tpot_ms": 72.48,
+      "p99_itl_ms": 214.32
+    },
+    {
+      "topology": "TP2_RCCL",
+      "concurrency": 2,
+      "requests": 8,
+      "output_tokens_per_second": 25.62,
+      "total_tokens_per_second": 32.03,
+      "mean_ttft_ms": 295.67,
+      "mean_tpot_ms": 76.21,
+      "p99_itl_ms": 218.87
+    },
+    {
+      "topology": "TP2_RCCL",
+      "concurrency": 4,
+      "requests": 8,
+      "output_tokens_per_second": 49.62,
+      "total_tokens_per_second": 62.02,
+      "mean_ttft_ms": 403.82,
+      "mean_tpot_ms": 77.91,
+      "p99_itl_ms": 233.84
+    },
+    {
+      "topology": "TP2_RCCL",
+      "concurrency": 8,
+      "requests": 16,
+      "output_tokens_per_second": 69.52,
+      "total_tokens_per_second": 86.90,
+      "mean_ttft_ms": 634.22,
+      "mean_tpot_ms": 110.87,
+      "p99_itl_ms": 277.54
+    },
+    {
+      "topology": "TP2_RCCL",
+      "concurrency": 16,
+      "requests": 32,
+      "output_tokens_per_second": 119.15,
+      "total_tokens_per_second": 148.93,
+      "mean_ttft_ms": 842.16,
+      "mean_tpot_ms": 128.64,
+      "p99_itl_ms": 293.38
+    },
+    {
+      "topology": "TP2_RCCL",
+      "concurrency": 32,
+      "requests": 64,
+      "output_tokens_per_second": 179.73,
+      "total_tokens_per_second": 224.66,
+      "mean_ttft_ms": 1067.01,
+      "mean_tpot_ms": 170.65,
+      "p99_itl_ms": 337.30
+    }
+  ]
+}

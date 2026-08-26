@@ -614,6 +614,52 @@ At batch 8, however, TP2 RCCL reached 81.84 aggregate output tokens/s versus
 for capacity and concurrency even when communication overhead loses on a
 single short request.
 
+### Qwen3.8-27B concurrent serving
+
+The same native W4A16 checkpoint was served through the OpenAI-compatible API
+with 32 random input tokens, 128 forced output tokens, BF16 activations,
+automatic ROCm attention, async scheduling, eager/O0, a 512-token scheduler,
+and prefix caching disabled. Every row completed with no failed requests.
+
+| Concurrency | TP1 output tok/s | TP2 RCCL output tok/s | TP1 mean TTFT | TP2 mean TTFT |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | **21.31** | 13.65 | **127.90 ms** | 171.00 ms |
+| 2 | **36.51** | 25.62 | **209.42 ms** | 295.67 ms |
+| 4 | **73.74** | 49.62 | **246.12 ms** | 403.82 ms |
+| 8 | 66.65 | **69.52** | **385.59 ms** | 634.22 ms |
+| 16 | **125.16** | 119.15 | **613.87 ms** | 842.16 ms |
+| 32 | 170.48 | **179.73** | **780.45 ms** | 1,067.01 ms |
+
+TP1 is the latency and low-concurrency choice. At concurrency 32, TP2 RCCL is
+5.4% faster in aggregate output throughput and reaches 224.66 total tok/s
+versus 213.10 on TP1. Both TP2 ranks reported
+`all_reduce=rccl other_collectives=rccl`, and runtime traces proved RCCL
+AllReduce and AllGather. The separate Gloo process group is CPU control-plane
+bootstrap, not a tensor-payload fallback. Exact machine-readable rows are in
+`benchmarks/qwen38-w4a16-concurrency-20260826.json`.
+
+Reproduce the server and matrix with:
+
+```powershell
+.\scripts\serve-qwen38-27b.ps1 -Mode Single
+.\scripts\serve-qwen38-27b.ps1 -Mode Rccl
+
+.\scripts\benchmark-qwen38-concurrency.ps1 `
+    -Concurrency 1,2,4,8,16,32 `
+    -InputLen 32 -OutputLen 128
+```
+
+The AWQ checkpoint does not include its own `mtp.*` tensors. The experimental
+`scripts\prepare-qwen38-27b-awq-mtp.py` builder can reproduce a standalone
+BF16 MTP head from the pinned official Qwen checkpoint while keeping the INT4
+target unchanged. Local vLLM patches recognize Qwen's text-config aliases and
+keep that draft head unquantized. The head now loads completely and shares the
+target embedding/LM head, but its first Windows ROCm profile currently fails
+in the M-RoPE path because query/key and 3-D positions disagree. Current
+upstream [Qwen3.5 guidance](https://github.com/vllm-project/recipes/blob/main/Qwen/Qwen3.5.md)
+also labels MTP-1 on AMD GPUs as under development, so MTP remains off by
+default and no speculative speedup is claimed.
+
 ### DFlash2 result
 
 The official Apache-2.0

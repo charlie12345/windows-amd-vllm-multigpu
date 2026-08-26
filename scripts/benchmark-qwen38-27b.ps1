@@ -14,6 +14,7 @@ param(
         'V2AsyncEager', 'DFlash2Eager', 'DFlash2TunedO1'
     )]
     [string]$Profile = 'Baseline',
+    [string]$MtpModelPath = '',
     [string]$SpeculativeModelPath = '',
     [ValidateSet('balanced', 'interactivity', 'throughput')]
     [string]$PerformanceMode = 'balanced',
@@ -73,7 +74,15 @@ if (($InputLen * $BatchSize) -gt $MaxNumBatchedTokens) {
     throw 'InputLen times BatchSize cannot exceed MaxNumBatchedTokens.'
 }
 $UsesDFlash2 = $Profile -in @('DFlash2Eager', 'DFlash2TunedO1')
+$UsesMtp = $Profile -in @(
+    'EagerMtp', 'AsyncEagerMtp', 'TunedO1Mtp', 'TunedO2Mtp'
+)
 $UsesV2Runner = $UsesDFlash2 -or $Profile -eq 'V2AsyncEager'
+if ($UsesMtp -and -not [string]::IsNullOrWhiteSpace($MtpModelPath)) {
+    if (-not (Test-Path -LiteralPath $MtpModelPath)) {
+        throw "Missing MTP checkpoint: $MtpModelPath"
+    }
+}
 if ($UsesDFlash2) {
     if ([string]::IsNullOrWhiteSpace($SpeculativeModelPath)) {
         throw "Profile $Profile requires -SpeculativeModelPath."
@@ -132,6 +141,17 @@ if ($UsesDFlash2) {
     )
 }
 
+$MtpArgs = @(
+    '--speculative-config.method', 'mtp',
+    '--speculative-config.num-speculative-tokens', '1'
+)
+if (-not [string]::IsNullOrWhiteSpace($MtpModelPath)) {
+    $MtpArgs += @(
+        '--speculative-config.model',
+        (Resolve-Path -LiteralPath $MtpModelPath).Path
+    )
+}
+
 $RunRoot = Join-Path $ProjectRoot (
     'logs\qwen38-27b-' + $ModelLabel + '-' + $Transport.ToLowerInvariant() +
     '-' + $Profile.ToLowerInvariant() + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
@@ -177,11 +197,8 @@ switch ($Profile) {
         $BenchArgs += @('--enforce-eager', '-O0', '--no-async-scheduling')
     }
     'EagerMtp' {
-        $BenchArgs += @(
-            '--enforce-eager', '-O0', '--no-async-scheduling',
-            '--speculative-config',
-            '{"method":"mtp","num_speculative_tokens":1}'
-        )
+        $BenchArgs += @('--enforce-eager', '-O0', '--no-async-scheduling')
+        $BenchArgs += $MtpArgs
     }
     'AsyncEager' {
         $BenchArgs += @('--enforce-eager', '-O0', '--async-scheduling')
@@ -190,11 +207,8 @@ switch ($Profile) {
         $BenchArgs += @('--enforce-eager', '-O0', '--async-scheduling')
     }
     'AsyncEagerMtp' {
-        $BenchArgs += @(
-            '--enforce-eager', '-O0', '--async-scheduling',
-            '--speculative-config',
-            '{"method":"mtp","num_speculative_tokens":1}'
-        )
+        $BenchArgs += @('--enforce-eager', '-O0', '--async-scheduling')
+        $BenchArgs += $MtpArgs
     }
     'TunedO1' {
         $BenchArgs += @(
@@ -205,10 +219,9 @@ switch ($Profile) {
     'TunedO1Mtp' {
         $BenchArgs += @(
             '-O1', '--async-scheduling',
-            '--compilation-config', '{"compile_sizes":[]}',
-            '--speculative-config',
-            '{"method":"mtp","num_speculative_tokens":1}'
+            '--compilation-config', '{"compile_sizes":[]}'
         )
+        $BenchArgs += $MtpArgs
     }
     'TunedO2' {
         $BenchArgs += @(
@@ -221,10 +234,9 @@ switch ($Profile) {
         $BenchArgs += @(
             '-O2', '--async-scheduling',
             '--compilation-config',
-            '{"cudagraph_capture_sizes":[1,8,32],"max_cudagraph_capture_size":32}',
-            '--speculative-config',
-            '{"method":"mtp","num_speculative_tokens":1}'
+            '{"cudagraph_capture_sizes":[1,8,32],"max_cudagraph_capture_size":32}'
         )
+        $BenchArgs += $MtpArgs
     }
     'DFlash2Eager' {
         $BenchArgs += @(

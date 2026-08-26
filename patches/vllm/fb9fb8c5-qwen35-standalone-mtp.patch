@@ -1,0 +1,138 @@
+diff --git a/tests/config/test_qwen3_5_mtp_config.py b/tests/config/test_qwen3_5_mtp_config.py
+new file mode 100644
+index 000000000..bfa36d725
+--- /dev/null
++++ b/tests/config/test_qwen3_5_mtp_config.py
+@@ -0,0 +1,29 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++import pytest
++from transformers import PretrainedConfig
++
++from vllm.config.speculative import SpeculativeConfig
++
++
++@pytest.mark.cpu_test
++@pytest.mark.parametrize(
++    ("model_type", "expected_architecture"),
++    [
++        ("qwen3_5_text", "Qwen3_5MTP"),
++        ("qwen3_5_moe_text", "Qwen3_5MoeMTP"),
++    ],
++)
++def test_qwen3_5_text_config_maps_to_mtp(model_type, expected_architecture):
++    config = PretrainedConfig(
++        architectures=["Qwen3_5ForCausalLM"],
++        model_type=model_type,
++        mtp_num_hidden_layers=1,
++    )
++
++    out = SpeculativeConfig.hf_config_override(config)
++
++    assert out.model_type == "qwen3_5_mtp"
++    assert out.architectures == [expected_architecture]
++    assert out.n_predict == 1
+diff --git a/tests/v1/spec_decode/test_llm_base_proposer.py b/tests/v1/spec_decode/test_llm_base_proposer.py
+index 5510c36e6..5e1a4fb2c 100644
+--- a/tests/v1/spec_decode/test_llm_base_proposer.py
++++ b/tests/v1/spec_decode/test_llm_base_proposer.py
+@@ -16,12 +16,18 @@ from types import SimpleNamespace
+ import pytest
+ 
+ import vllm.v1.spec_decode.llm_base_proposer as llm_base_proposer
++import vllm.v1.spec_decode.eagle as eagle_module
+ from vllm.v1.spec_decode.eagle import EagleProposer
+ 
+ SCHEDULER_BLOCK_SIZE = 256
+ KERNEL_BLOCK_SIZE = 64
+ 
+ 
++class _FakeVllmConfig:
++    def __init__(self, quant_config: object):
++        self.quant_config = quant_config
++
++
+ class _FakeAttentionGroup:
+     def __init__(self, backend, layer_names, kv_cache_spec, kv_cache_group_id):
+         self.backend = backend
+@@ -110,3 +116,27 @@ def test_draft_layer_iteration_is_deterministic(monkeypatch: pytest.MonkeyPatch)
+         assert len(proposer.draft_attn_groups) == 1
+         assert proposer.draft_attn_groups[0].layer_names == expected_order
+         assert proposer.block_size == KERNEL_BLOCK_SIZE
++
++
++def test_eagle_uses_draft_quantization(monkeypatch: pytest.MonkeyPatch):
++    """A standalone BF16 MTP head must not inherit target INT4 kernels."""
++    target_quant = object()
++    draft_quant = object()
++    base = _FakeVllmConfig(quant_config=target_quant)
++    proposer = EagleProposer.__new__(EagleProposer)
++
++    monkeypatch.setattr(
++        llm_base_proposer.SpecDecodeBaseProposer,
++        "_create_draft_vllm_config",
++        lambda self: base,
++    )
++    monkeypatch.setattr(
++        eagle_module,
++        "get_draft_quant_config",
++        lambda config: draft_quant,
++    )
++
++    result = proposer._create_draft_vllm_config()
++
++    assert result is base
++    assert result.quant_config is draft_quant
+diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
+index 17f930efe..67d556da8 100644
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -524,8 +524,13 @@ class SpeculativeConfig:
+             hf_config.update(
+                 {"n_predict": n_predict, "architectures": ["Exaone4_5_MTP"]}
+             )
+-        if hf_config.model_type in ("qwen3_5", "qwen3_5_moe"):
+-            is_moe = hf_config.model_type == "qwen3_5_moe"
++        if hf_config.model_type in (
++            "qwen3_5",
++            "qwen3_5_moe",
++            "qwen3_5_text",
++            "qwen3_5_moe_text",
++        ):
++            is_moe = hf_config.model_type in ("qwen3_5_moe", "qwen3_5_moe_text")
+             hf_config.model_type = "qwen3_5_mtp"
+             n_predict = getattr(hf_config, "mtp_num_hidden_layers", None)
+             hf_config.update(
+diff --git a/vllm/v1/spec_decode/eagle.py b/vllm/v1/spec_decode/eagle.py
+index 002d0b783..b59a18bae 100644
+--- a/vllm/v1/spec_decode/eagle.py
++++ b/vllm/v1/spec_decode/eagle.py
+@@ -4,6 +4,7 @@
+ import torch
+ 
+ from vllm.config import VllmConfig
++from vllm.model_executor.models.utils import get_draft_quant_config
+ from vllm.v1.spec_decode.llm_base_proposer import SpecDecodeBaseProposer
+ 
+ 
+@@ -20,3 +21,19 @@ class EagleProposer(SpecDecodeBaseProposer):
+             pass_hidden_states_to_model=True,
+             runner=runner,
+         )
++
++    def _create_draft_vllm_config(self) -> VllmConfig:
++        """Use the draft checkpoint's quantization, not the target's.
++
++        MTP normally stores its head in the target checkpoint, so both configs
++        resolve to the same quantization. An explicit standalone MTP/EAGLE
++        checkpoint may intentionally keep its head unquantized while the
++        target is quantized; carrying the target quantization object into that
++        model creates packed parameters for BF16 weights and makes loading fail.
++        """
++        draft_vllm_config = super()._create_draft_vllm_config()
++        # VllmConfig.__post_init__ derives quant_config from model_config, so a
++        # dataclass replace would immediately restore the target's value. Set
++        # the resolved draft value after construction instead.
++        draft_vllm_config.quant_config = get_draft_quant_config(draft_vllm_config)
++        return draft_vllm_config
