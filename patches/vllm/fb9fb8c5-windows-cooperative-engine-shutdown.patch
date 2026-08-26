@@ -40,7 +40,7 @@ index 11c78c7e7..f4c840e54 100644
  
          except SystemExit:
 diff --git a/vllm/v1/engine/utils.py b/vllm/v1/engine/utils.py
-index 80df8a215..1f28ca45e 100644
+index 80df8a215..a8e3994d4 100644
 --- a/vllm/v1/engine/utils.py
 +++ b/vllm/v1/engine/utils.py
 @@ -5,6 +5,7 @@ import contextlib
@@ -51,7 +51,7 @@ index 80df8a215..1f28ca45e 100644
  import weakref
  from collections.abc import Callable, Iterator
  from dataclasses import dataclass
-@@ -43,6 +44,32 @@ logger = init_logger(__name__)
+@@ -43,6 +44,44 @@ logger = init_logger(__name__)
  STARTUP_POLL_PERIOD_MS = 10000
  
  
@@ -69,7 +69,19 @@ index 80df8a215..1f28ca45e 100644
 +    """
 +    if shutdown_event is not None:
 +        shutdown_event.set()
-+        grace_timeout = 5.0 if timeout is None else timeout
++        # EngineCore first asks its multiprocessing workers to exit and waits
++        # VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS before forcing stragglers.  A
++        # matching five-second outer grace period races that inner deadline on
++        # Windows and can terminate EngineCore just before it reaps the worker
++        # tree, leaving orphaned Python processes.  The default outer grace
++        # must cover the worker deadline plus resource/communicator teardown.
++        grace_timeout = (
++            max(
++                float(timeout or 0),
++                float(envs.VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS),
++            )
++            + 10.0
++        )
 +        deadline = time.monotonic() + grace_timeout
 +        for proc in processes:
 +            remaining = deadline - time.monotonic()
@@ -84,7 +96,7 @@ index 80df8a215..1f28ca45e 100644
  class CoreEngineState(Enum):
      NEW = auto()
      CONNECTED = auto()
-@@ -138,6 +165,7 @@ class CoreEngineProcManager:
+@@ -138,6 +177,7 @@ class CoreEngineProcManager:
          tensor_queue: Queue | None = None,
      ):
          context = get_mp_context()
@@ -92,7 +104,7 @@ index 80df8a215..1f28ca45e 100644
          common_kwargs = {
              "vllm_config": vllm_config,
              "local_client": local_client,
-@@ -146,6 +174,8 @@ class CoreEngineProcManager:
+@@ -146,6 +186,8 @@ class CoreEngineProcManager:
              "log_stats": log_stats,
              "tensor_queue": tensor_queue,
          }
@@ -101,7 +113,7 @@ index 80df8a215..1f28ca45e 100644
  
          if client_handshake_address:
              common_kwargs["client_handshake_address"] = client_handshake_address
-@@ -171,7 +201,12 @@ class CoreEngineProcManager:
+@@ -171,7 +213,12 @@ class CoreEngineProcManager:
                  )
              )
  
@@ -115,7 +127,7 @@ index 80df8a215..1f28ca45e 100644
          self.manager_stopped = threading.Event()
          self.failed_proc_name: str | None = None
  
-@@ -218,7 +253,11 @@ class CoreEngineProcManager:
+@@ -218,7 +265,11 @@ class CoreEngineProcManager:
          """Shutdown engine core processes with configurable timeout."""
          self.manager_stopped.set()
          if self._finalizer.detach() is not None:

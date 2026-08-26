@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import multiprocessing
 import sys
+import time
 
 
 def _cooperative_child(shutdown_event) -> None:
     if not shutdown_event.wait(timeout=10):
         raise TimeoutError("parent did not request cooperative shutdown")
+    # EngineCore can spend at least the worker-shutdown timeout reaping TP
+    # children. The outer process manager must not kill it at the same deadline.
+    time.sleep(6)
 
 
 def main() -> int:

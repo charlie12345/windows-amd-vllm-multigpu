@@ -433,6 +433,32 @@ dummy controls both initialized, generated, and performed cooperative shutdown
 after this change. The standalone Gloo probe also passes in-process and in a
 fresh Windows spawned child, with or without CUDA initialization.
 
+## Ling 3.0 tiny Windows ROCm validation
+
+The BF16 `inclusionAI/Ling-3.0-tiny` architecture was tested at revision
+`b61f4338de3e68ffc9c0bc1ed5e902981a4a929e` with random dummy weights. This
+validates model construction and execution without treating random token output
+as a model-quality result. The test used BF16, a 128-token limit, eager/O0, and
+prefix caching disabled.
+
+The added ROCm `TRITON_MLA` prefill kernel first passed direct numerical tests
+against a float32 PyTorch reference for packed variable-length causal attention
+and non-causal context chunks. Both cases used Ling's Q/K head dimension 192
+and V head dimension 128 and verified output plus natural-log LSE values.
+
+TP1 selected Triton MoE, `TRITON_MLA` decode, and `TRITON_MLA` prefill, loaded
+16.54 GiB, created a 14,688-token KV cache at 80% utilization, and generated
+four tokens. TP2 loaded about 8.83 GiB per worker, created a 109,344-token KV
+cache at 70% utilization, and generated two tokens. Trace output from both
+ranks showed `all_reduce=d3d12`, `all_gather=rccl`, and no GPU tensor payload
+collective routed through Gloo. Both GPUs returned to 34,050,342,912 free bytes
+after shutdown.
+
+The first TP1 and TP2 requests took roughly 94 and 124 seconds respectively
+because many Ling KDA/MoE Triton shapes were compiled and autotuned for the
+first time. Those figures are not steady-state benchmarks or performance
+claims. Real BF16/FP8/INT4 weight quality and throughput remain to be measured.
+
 ## Historical BF16 large-model TP2 validation
 
 The earlier large-model validation used

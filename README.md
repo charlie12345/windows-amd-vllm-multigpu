@@ -245,6 +245,61 @@ decode-context, prefill-context, and expert-parallel layouts.
 Set `WAVMG_TRACE_COLLECTIVES=1` to print one routing marker per operation and
 backend on each rank. It is enabled by the large-model validation script.
 
+## Ling 3.0 tiny support
+
+The pinned Windows vLLM build now includes upstream support for
+[`inclusionAI/Ling-3.0-tiny`](https://huggingface.co/inclusionAI/Ling-3.0-tiny)
+(`BailingMoeV3ForCausalLM`), including its hybrid KDA/MLA attention, MoE model,
+MTP model class, Ling reasoning/tool parsers, FP8 handling, and routed-expert
+MXFP4 support. The source commits and all three checkpoint revisions are pinned
+in `pins/nightly-2026-07-28.json`.
+
+The official native vLLM-format checkpoints are:
+
+| Checkpoint | Declared format | Weight bytes | Status in this build |
+| --- | --- | ---: | --- |
+| `inclusionAI/Ling-3.0-tiny` | BF16 SafeTensors | 15,787,992,416 | Dummy-weight TP1 and TP2 generation passed |
+| `inclusionAI/Ling-3.0-tiny-fp8` | FP8 SafeTensors, dynamic activations, 128x128 blocks | 8,409,692,800 | Upstream load/kernel support ported; real weights not yet tested here |
+| `inclusionAI/Ling-3.0-tiny-int4` | compressed-tensors INT4, group size 32 | 5,805,705,224 | Standard non-NVFP4 vLLM format; real weights not yet tested here |
+
+These are not GGUF checkpoints. The repositories declare MIT; weights are not
+bundled with this project. Because the pinned Hugging Face repository maps its
+custom configuration code, launches currently require `--trust-remote-code`.
+Keep the pinned revision and inspect that code before allowing it on another
+machine.
+
+Ling exposed a gap on RDNA 4 Windows: upstream could select only AITER or ROCm
+FlashAttention for MLA prefill, neither of which supports this installed
+`gfx1201` stack. This project adds `TRITON_MLA` as a third, lower-priority ROCm
+prefill backend. It supports Ling's 192-wide Q/K and 128-wide V heads,
+variable-length batches, causal prefill, and LSE output for chunked-context
+merging. Attention payloads remain GPU-resident. AITER and FlashAttention stay
+higher priority whenever their runtime feature checks pass.
+
+Run the reproducible BF16 architecture smoke without downloading the 15.8 GB
+checkpoint:
+
+```powershell
+# One GPU
+.\scripts\smoke-ling3.ps1 -TensorParallelSize 1
+
+# Two GPUs: D3D12 AllReduce plus RCCL for the other collectives
+.\scripts\smoke-ling3.ps1 -TensorParallelSize 2
+```
+
+Set `-UseDummyWeights $false` to download and run the exact pinned BF16
+checkpoint. The smoke deliberately uses eager/O0 for a short correctness test;
+it is not the recommended performance profile or a speed benchmark.
+
+On the two-R9700 reference system, TP1 dummy generation loaded 16.54 GiB and
+completed four tokens. TP2 loaded approximately 8.83 GiB per worker and
+completed two tokens. Trace markers proved D3D12 AllReduce and RCCL AllGather
+on both ranks; Gloo remained the CPU rendezvous/control plane. The numerical
+MLA tests also match a float32 PyTorch reference for causal and chunked-context
+attention. Random dummy weights cannot validate model quality, and the long
+first-request times were one-time Triton JIT/autotuning rather than steady-state
+throughput.
+
 ## Large-model proof of tensor parallelism
 
 The pinned large test is

@@ -62,3 +62,14 @@ z-lab/Qwen3.8-27B-DFlash2 revision
 50307d4c4cde6860d4eee73e2547cd786fe8e8a4. Their model cards declare
 Apache-2.0. Both are downloaded directly to local storage, retain their target
 model attribution, and are not distributed by this repository.
+
+Ling 3.0 support was ported from InclusionAI's public vLLM support branch and
+subsequent vLLM commits recorded in pins/nightly-2026-07-28.json. Optional
+inclusionAI/Ling-3.0-tiny BF16, FP8, and INT4 repositories declare the MIT
+License. Only pinned metadata/configuration and dummy-weight execution were
+used for validation; model weights are not distributed by this repository.
+
+The Windows ROCm Triton MLA prefill fallback is original integration code by
+Carlo Pasquale, Copyright 2026, distributed under Apache-2.0 as part of this
+project. It modifies the Apache-2.0 vLLM source tree through a clearly named,
+version-locked patch and retains vLLM's upstream notices.

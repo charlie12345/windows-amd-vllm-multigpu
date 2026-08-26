@@ -6,7 +6,9 @@ $VllmRoot = Join-Path $ProjectRoot "sandbox\vllm"
 $Patches = @(
     "patches\vllm\fb9fb8c5-windows-pipeconnection.patch",
     "patches\vllm\fb9fb8c5-dflash2-upstream.patch",
-    "patches\vllm\fb9fb8c5-windows-cooperative-engine-shutdown.patch"
+    "patches\vllm\fb9fb8c5-windows-cooperative-engine-shutdown.patch",
+    "patches\vllm\fb9fb8c5-ling3-upstream.patch",
+    "patches\vllm\fb9fb8c5-windows-rocm-triton-mla-prefill.patch"
 )
 
 $ActualCommit = (git -C $VllmRoot rev-parse HEAD).Trim()

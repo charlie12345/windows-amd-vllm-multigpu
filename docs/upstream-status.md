@@ -63,3 +63,19 @@ settings, but they do not override the driver/runtime peer-access capability.
 The stream write/wait APIs are marked Beta. The repository therefore treats
 this implementation as experimental and documents the need for watchdog and
 fault testing before production use.
+
+## Ling 3.0 and MLA prefill
+
+The pinned Windows fork predates complete `BailingMoeV3ForCausalLM` support.
+This repository applies the InclusionAI Ling 3.0 support commit plus the later
+upstream FP8, routed-expert MXFP4, and KDA graph-profile fixes recorded in the
+pin manifest. The patch is layered after the existing Windows/DFlash changes
+instead of merging a moving vLLM branch.
+
+Current upstream ROCm MLA prefill selection tries AITER FlashAttention and then
+FlashAttention. On the reference RDNA 4 Windows stack, AITER rejects the GPU
+family and ROCm FlashAttention is unavailable. The local `TRITON_MLA` fallback
+is therefore selected third. It was numerically checked on `gfx1201` and used
+by successful TP1 and TP2 Ling dummy-weight generation. This compatibility
+backend should be proposed upstream separately from the model-support port;
+tuned AITER/FlashAttention remain preferable where available.
