@@ -1,0 +1,55 @@
+diff --git a/tests/compile/test_compile_ranges.py b/tests/compile/test_compile_ranges.py
+index 4dfea42a6..926ad6477 100644
+--- a/tests/compile/test_compile_ranges.py
++++ b/tests/compile/test_compile_ranges.py
+@@ -14,6 +14,7 @@ from vllm.compilation.passes.inductor_pass import (
+     InductorPass,
+     get_pass_context,
+ )
++from vllm.compilation.piecewise_backend import PiecewiseBackend, RangeEntry
+ from vllm.config import (
+     VllmConfig,
+     set_current_vllm_config,
+@@ -127,6 +128,18 @@ def test_compile_config_get_compile_ranges():
+     ]
+ 
+ 
++def test_find_compile_range_without_concrete_compile_sizes():
++    """Dynamic ranges remain usable when compile_sizes is unset (O1)."""
++    compile_range = Range(start=1, end=511)
++    range_entry = RangeEntry(compile_range=compile_range, compiled=True)
++    backend = object.__new__(PiecewiseBackend)
++    backend.compile_sizes = None
++    backend.compile_ranges = [compile_range]
++    backend.range_entries = {compile_range: range_entry}
++
++    assert backend._find_range_for_shape(511) is range_entry
++
++
+ class PostGradStaticShapeChecker(InductorPass):
+     """Asserts that compile_sizes entries produce graphs with fully concrete
+     (non-symbolic) shapes, and compile_ranges entries have symbolic shapes."""
+diff --git a/vllm/compilation/piecewise_backend.py b/vllm/compilation/piecewise_backend.py
+index b647e0d85..1766078c8 100644
+--- a/vllm/compilation/piecewise_backend.py
++++ b/vllm/compilation/piecewise_backend.py
+@@ -344,15 +344,11 @@ class PiecewiseBackend:
+         # First we try to find the range entry for the concrete compile size
+         # If not found, we search for the range entry
+         # that contains the runtime shape.
+-        if self.compile_sizes is None:
+-            return None
+-
+-        if runtime_shape in self.compile_sizes:
++        if self.compile_sizes is not None and runtime_shape in self.compile_sizes:
+             return self.range_entries[Range(start=runtime_shape, end=runtime_shape)]
+-        else:
+-            for range in self.compile_ranges:
+-                if runtime_shape in range:
+-                    return self.range_entries[range]
++        for range in self.compile_ranges:
++            if runtime_shape in range:
++                return self.range_entries[range]
+         return None
+ 
+     def __call__(self, *args: Any) -> Any:

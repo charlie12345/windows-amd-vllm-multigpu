@@ -8,7 +8,8 @@ $Patches = @(
     "patches\vllm\fb9fb8c5-dflash2-upstream.patch",
     "patches\vllm\fb9fb8c5-windows-cooperative-engine-shutdown.patch",
     "patches\vllm\fb9fb8c5-ling3-upstream.patch",
-    "patches\vllm\fb9fb8c5-windows-rocm-triton-mla-prefill.patch"
+    "patches\vllm\fb9fb8c5-windows-rocm-triton-mla-prefill.patch",
+    "patches\vllm\fb9fb8c5-compile-ranges-without-compile-sizes.patch"
 )
 
 $ActualCommit = (git -C $VllmRoot rev-parse HEAD).Trim()

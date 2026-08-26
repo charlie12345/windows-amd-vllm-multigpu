@@ -79,3 +79,9 @@ is therefore selected third. It was numerically checked on `gfx1201` and used
 by successful TP1 and TP2 Ling dummy-weight generation. This compatibility
 backend should be proposed upstream separately from the model-support port;
 tuned AITER/FlashAttention remain preferable where available.
+
+The real-weight O1 benchmark also exposed an upstream compile dispatcher bug:
+dynamic compile ranges were never searched when `compile_sizes` was unset.
+The version-locked `compile-ranges-without-compile-sizes` patch removes that
+incorrect early return and adds a focused regression test. This is independent
+of the Windows transport and is a candidate for a small upstream fix.

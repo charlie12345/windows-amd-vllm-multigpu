@@ -66,10 +66,14 @@ model attribution, and are not distributed by this repository.
 Ling 3.0 support was ported from InclusionAI's public vLLM support branch and
 subsequent vLLM commits recorded in pins/nightly-2026-07-28.json. Optional
 inclusionAI/Ling-3.0-tiny BF16, FP8, and INT4 repositories declare the MIT
-License. Only pinned metadata/configuration and dummy-weight execution were
-used for validation; model weights are not distributed by this repository.
+License. The pinned BF16 weights were downloaded only to local storage for
+real-weight benchmarking; model weights are not distributed by this repository.
 
 The Windows ROCm Triton MLA prefill fallback is original integration code by
 Carlo Pasquale, Copyright 2026, distributed under Apache-2.0 as part of this
 project. It modifies the Apache-2.0 vLLM source tree through a clearly named,
 version-locked patch and retains vLLM's upstream notices.
+
+The dynamic compile-range dispatcher correction and its regression test are
+also original Carlo Pasquale project contributions distributed under
+Apache-2.0 in a separate, clearly named version-locked patch.

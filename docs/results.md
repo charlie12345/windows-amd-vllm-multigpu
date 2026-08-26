@@ -454,10 +454,28 @@ ranks showed `all_reduce=d3d12`, `all_gather=rccl`, and no GPU tensor payload
 collective routed through Gloo. Both GPUs returned to 34,050,342,912 free bytes
 after shutdown.
 
-The first TP1 and TP2 requests took roughly 94 and 124 seconds respectively
-because many Ling KDA/MoE Triton shapes were compiled and autotuned for the
-first time. Those figures are not steady-state benchmarks or performance
-claims. Real BF16/FP8/INT4 weight quality and throughput remain to be measured.
+The first dummy TP1 and TP2 requests took roughly 94 and 124 seconds
+respectively because many Ling KDA/MoE Triton shapes were compiled and
+autotuned for the first time. Those figures are not performance claims.
+
+The exact pinned BF16 weights were subsequently downloaded to local storage
+and benchmarked with 32 input tokens, 128 output tokens, batch size one, three
+warmups, five measured iterations, async scheduling, and O1 compilation. The
+rate below is `128 / average request latency`; it includes the short prefill and
+is therefore a conservative approximation of steady decode:
+
+| Configuration | Average | p50 | Output tokens/s |
+| --- | ---: | ---: | ---: |
+| TP1 | 4.8467 s | 4.8977 s | **26.41** |
+| TP2 RCCL-only | 4.8955 s | 4.9824 s | **26.15** |
+| TP2 D3D12 + RCCL | 5.8652 s | 6.0914 s | **21.82** |
+
+O1 originally failed during profile execution because
+`PiecewiseBackend._find_range_for_shape()` returned early whenever
+`compile_sizes` was `None`, even though a valid dynamic range existed. The
+local fix searches dynamic compile ranges independently of concrete compile
+sizes. Its focused regression test and all three real-weight runs passed.
+Real FP8 and INT4 weight quality and throughput remain to be measured.
 
 ## Historical BF16 large-model TP2 validation
 

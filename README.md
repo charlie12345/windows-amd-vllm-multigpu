@@ -258,7 +258,7 @@ The official native vLLM-format checkpoints are:
 
 | Checkpoint | Declared format | Weight bytes | Status in this build |
 | --- | --- | ---: | --- |
-| `inclusionAI/Ling-3.0-tiny` | BF16 SafeTensors | 15,787,992,416 | Dummy-weight TP1 and TP2 generation passed |
+| `inclusionAI/Ling-3.0-tiny` | BF16 SafeTensors | 15,787,992,416 | Real-weight TP1 and TP2 O1 benchmarks passed |
 | `inclusionAI/Ling-3.0-tiny-fp8` | FP8 SafeTensors, dynamic activations, 128x128 blocks | 8,409,692,800 | Upstream load/kernel support ported; real weights not yet tested here |
 | `inclusionAI/Ling-3.0-tiny-int4` | compressed-tensors INT4, group size 32 | 5,805,705,224 | Standard non-NVFP4 vLLM format; real weights not yet tested here |
 
@@ -299,6 +299,24 @@ MLA tests also match a float32 PyTorch reference for causal and chunked-context
 attention. Random dummy weights cannot validate model quality, and the long
 first-request times were one-time Triton JIT/autotuning rather than steady-state
 throughput.
+
+The real pinned BF16 checkpoint was then benchmarked with a 32-token input,
+128-token output, batch size one, three warmups, five measured iterations,
+async scheduling, and O1 compilation. The reported rate is generated tokens
+divided by complete request latency, so it includes the small prefill cost:
+
+| Configuration | Average latency | Output tokens/s |
+| --- | ---: | ---: |
+| TP1 | 4.8467 s | **26.41** |
+| TP2 RCCL-only | 4.8955 s | **26.15** |
+| TP2 D3D12 AllReduce + RCCL | 5.8652 s | **21.82** |
+
+For this relatively small MoE model, one GPU and TP2 RCCL-only are effectively
+tied, while D3D12 AllReduce overhead makes the hybrid slower. TP2 still reduces
+model memory to about 8.84 GiB per GPU and provides much more KV-cache capacity.
+Run `scripts\benchmark-ling3.ps1` to reproduce all three cases. O1 required a
+local fix so dynamic compile ranges remain selectable when concrete
+`compile_sizes` is unset; that fix is part of the version-locked patch stack.
 
 ## Large-model proof of tensor parallelism
 

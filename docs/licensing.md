@@ -21,7 +21,7 @@ distribution checklist, not legal advice.
 | Qwen3.8-27B native NVFP4 compatibility trial | `unsloth/Qwen3.8-27B-NVFP4` at `9e3d73c76eddb75f795cc24ccfbc5affe41c66bd`, derived from `Qwen/Qwen3.8-27B` | Quantizer-publisher-declared Apache-2.0; retain base-model attribution | Results and pin retained; weights were deleted and are not bundled |
 | Qwen3.8-27B standard W4A16 INT4 trial | `abihsoro/Qwen3.8-27B-AWQ-INT4` at `f2e0cac39907e7b1ed7fdb210363dd33cc18f993`, derived from `Qwen/Qwen3.8-27B` | Quantizer-publisher-declared Apache-2.0; retain base-model attribution | Downloaded to `G:` for local testing; never committed or bundled |
 | Qwen3.8-27B DFlash2 drafter trial | `z-lab/Qwen3.8-27B-DFlash2` at `50307d4c4cde6860d4eee73e2547cd786fe8e8a4`, for the Qwen3.8 target | Model-publisher-declared Apache-2.0; retain target-model attribution | Downloaded to `G:` for local testing; never committed or bundled |
-| Ling 3.0 tiny BF16/FP8/INT4 checkpoints | `inclusionAI/Ling-3.0-tiny` at `b61f4338de3e68ffc9c0bc1ed5e902981a4a929e`, `inclusionAI/Ling-3.0-tiny-fp8` at `2eaebc694fb57008b7a865d144dd3d5c8f943ed9`, and `inclusionAI/Ling-3.0-tiny-int4` at `65a6d1d71e01f73ba01e572992bbd69ea92c865f` | Model-publisher-declared MIT; retain InclusionAI attribution and review remote configuration code before execution | Metadata/configuration and dummy-weight tests only; model weights are never committed or bundled |
+| Ling 3.0 tiny BF16/FP8/INT4 checkpoints | `inclusionAI/Ling-3.0-tiny` at `b61f4338de3e68ffc9c0bc1ed5e902981a4a929e`, `inclusionAI/Ling-3.0-tiny-fp8` at `2eaebc694fb57008b7a865d144dd3d5c8f943ed9`, and `inclusionAI/Ling-3.0-tiny-int4` at `65a6d1d71e01f73ba01e572992bbd69ea92c865f` | Model-publisher-declared MIT; retain InclusionAI attribution and review remote configuration code before execution | BF16 downloaded only to local storage for benchmarks; model weights are never committed or bundled |
 
 The two shorter `LICENSES/RCCL-LICENSE.txt` and
 `LICENSES/RCCL-NOTICES.txt` files are convenient distribution copies and a
@@ -42,6 +42,8 @@ The vLLM patches change only the files named by their diffs. The Ling model
 support patch records the exact InclusionAI/upstream commits from which it was
 ported. The Windows ROCm Triton MLA fallback is original Carlo Pasquale project
 work under Apache-2.0 and carries its SPDX/copyright notice in the added source.
+The compile-range dispatcher correction and regression test are also original
+Carlo Pasquale project changes under Apache-2.0.
 The repository NOTICE, adjacent version-locked patches, and pinned fork NOTICE
 identify the modified distribution and upstream sources.
 
