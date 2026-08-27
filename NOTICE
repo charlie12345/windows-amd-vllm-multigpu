@@ -5,6 +5,10 @@ Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
+The external llama.cpp/ROCmFPX RCCL ABI shim and its D3D12 integration are
+original project code under Apache-2.0. A packaged `rccl-real.dll` remains an
+RCCL/NCCL-derived binary under the upstream terms described below.
+
 This project contains compatibility patches and integration code for vLLM,
 which is licensed under the Apache License, Version 2.0:
 https://github.com/vllm-project/vllm

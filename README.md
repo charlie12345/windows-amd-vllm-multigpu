@@ -1,12 +1,23 @@
-# Windows AMD vLLM Multi-GPU
+# Windows AMD Multi-GPU Bridge
 
-Native-Windows AMD tensor parallelism for vLLM using a port of RCCL plus a
-D3D12 cross-adapter AllReduce fast path. This is a separate project and does
-not modify or build inside the Windows AMD vLLM checkout at `C:\AI\vllm`.
+Native-Windows AMD multi-GPU collectives for vLLM and llama.cpp/ROCmFPX using
+a port of RCCL plus a D3D12 cross-adapter AllReduce fast path. Both integrations
+remain external to the inference-engine source trees.
 
 The validated target is Windows 11 with two AMD Radeon AI PRO R9700
 (`gfx1201`) GPUs. Other AMD GPUs and software versions require their own
 validation.
+
+## Choose the correct adapter
+
+| Engine | Process model | Adapter | Guide |
+| --- | --- | --- | --- |
+| vLLM | one worker process per GPU | Python platform plugin + full Windows RCCL + cross-process D3D12 DLL | [Windows vLLM guide](docs/install-vllm-windows.md) |
+| llama.cpp / ROCmFPX | one process owns both GPU ranks | six-symbol RCCL ABI shim + real Windows RCCL + in-process D3D12 path | [llama/ROCmFPX guide](docs/install-llama-rocmfpx.md) |
+
+These are not interchangeable binaries. The llama shim deliberately implements
+only the RCCL calls imported by the tested llama HIP backend. vLLM requires the
+full RCCL DLL and its existing communicator adapter.
 
 ## What works
 
@@ -792,6 +803,8 @@ interpret a successful ReBAR setup as GPU-direct support.
 
 ## Repository layout
 
+- `adapters/llama-rccl-shim/`: external `roc::rccl` package for clean
+  llama.cpp/ROCmFPX builds.
 - `native/`: mapped-memory kernels, D3D12/HIP DLL, and capability probes.
 - `src/`: RCCL wrapper, D3D12 transport, fallbacks, and vLLM plugin.
 - `probes/`: exact-value, stream-ordering, model, and performance tests.
@@ -803,7 +816,8 @@ interpret a successful ReBAR setup as GPU-direct support.
 
 Full results and upstream constraints are in
 [docs/results.md](docs/results.md) and
-[docs/upstream-status.md](docs/upstream-status.md).
+[docs/upstream-status.md](docs/upstream-status.md). The source/binary release
+procedure and safety gates are in [docs/publishing.md](docs/publishing.md).
 
 ## Licensing and attribution
 

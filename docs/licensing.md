@@ -9,6 +9,7 @@ distribution checklist, not legal advice.
 | Material | Origin and pinned source | Applicable terms | Files shipped here |
 | --- | --- | --- | --- |
 | Original Python, C++, HIP, PowerShell, CMake, probes, and documentation | Carlo Pasquale (`@charlie12345`) and Windows AMD vLLM Multi-GPU contributors | Apache License 2.0 | `LICENSE`, `NOTICE` |
+| llama.cpp/ROCmFPX RCCL ABI shim and in-process D3D12 adapter | Carlo Pasquale (`@charlie12345`) and contributors | Apache License 2.0 | `adapters/llama-rccl-shim/`, `LICENSE`, `NOTICE` |
 | vLLM compatibility patch | `charlie12345/vLLM_for_AMD` at `fb9fb8c5aeaed96c91eef5cb48743a96f8496907`, derived from vLLM | Apache License 2.0 and the pinned fork's NOTICE | `patches/vllm/`, `LICENSES/VLLM-UPSTREAM-LICENSE.txt`, `LICENSES/VLLM-UPSTREAM-NOTICE.txt` |
 | Native Windows RCCL patch and a resulting `rccl.dll` | ROCm `rocm-systems/projects/rccl` at `ee3bae9a931561506c49dcf82fca52ec4711c34f`, derived in part from NVIDIA NCCL | Upstream BSD-3-Clause terms plus retained third-party terms | `patches/rccl/`, `LICENSES/RCCL-UPSTREAM-LICENSE.txt`, `LICENSES/RCCL-UPSTREAM-NOTICES.txt`, `LICENSES/RCCL-UPSTREAM-ThirdPartyNotices.txt` |
 | RCCL files added by this Windows port | Windows AMD vLLM Multi-GPU contributors, added inside the RCCL-derived tree | BSD-3-Clause, matching the surrounding RCCL project; each added source carries an SPDX identifier | Included inside the version-pinned RCCL patch |
@@ -55,7 +56,8 @@ A source archive must contain:
 1. the top-level `LICENSE` and `NOTICE`;
 2. the complete `LICENSES` directory;
 3. the exact `pins/nightly-2026-07-28.json` file; and
-4. both version-pinned patch directories.
+4. both version-pinned patch directories; and
+5. the complete `adapters/llama-rccl-shim` source directory.
 
 `MANIFEST.in` includes all four categories. The package build is checked so
 Python bytecode, upstream sandboxes, model weights, compiled objects, and local
@@ -71,6 +73,11 @@ inside an obvious `licenses` directory:
 2. `NOTICE`;
 3. every file under `LICENSES`; and
 4. a build manifest identifying the exact Git commit and dependency pins.
+
+For the llama package, `bin/rccl.dll` is the Apache-2.0 shim and
+`bin/rccl-real.dll` is the RCCL/NCCL-derived binary. The different filenames do
+not change their respective licenses. Ship the complete license bundle with
+both files.
 
 Do not bundle AMD drivers, ROCm wheels, Visual Studio components, the Vulkan
 SDK, vLLM source, or model weights unless their separate redistribution terms

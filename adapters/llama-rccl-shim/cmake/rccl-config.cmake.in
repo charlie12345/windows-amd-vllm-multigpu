@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(hip)
+include("${CMAKE_CURRENT_LIST_DIR}/rccl-targets.cmake")
+
+set(rccl_INCLUDE_DIRS "${PACKAGE_PREFIX_DIR}/include")
+set(RCCL_INCLUDE_DIRS "${PACKAGE_PREFIX_DIR}/include")
+set(rccl_LIBRARIES roc::rccl)
+set(RCCL_LIBRARIES roc::rccl)
+
+check_required_components(rccl)
