@@ -1,6 +1,7 @@
 include LICENSE
 include NOTICE
 recursive-include LICENSES *
+recursive-include adapters *
 recursive-include cmake *
 recursive-include docs *
 recursive-include native *

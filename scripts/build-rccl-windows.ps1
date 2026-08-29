@@ -19,9 +19,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $Build 'build.ninja'))) {
     throw 'Run scripts\configure-rccl-windows.ps1 first.'
 }
 
-$RocmRoot = (& $Python -m rocm_sdk path --root).Trim()
+if ($env:ROCM_ROOT) {
+    $RocmRoot = [IO.Path]::GetFullPath($env:ROCM_ROOT)
+} else {
+    $RocmRoot = (& $Python -m rocm_sdk path --root).Trim()
+}
 if (-not $RocmRoot) {
-    throw 'Could not locate the ROCm SDK wheel root.'
+    throw 'Could not locate ROCm. Set ROCM_ROOT or install rocm[devel].'
 }
 $env:ROCM_PATH = $RocmRoot.Replace('\', '/')
 $env:HIP_PATH = $env:ROCM_PATH
@@ -29,8 +33,12 @@ $env:HIP_PLATFORM = 'amd'
 $env:PATH = (Join-Path $RocmRoot 'bin') + ';' +
     (Join-Path $RocmRoot 'lib\llvm\bin') + ';' +
     (Join-Path $ProjectRoot 'tools') + ';' +
-    'C:\Program Files\Git\bin;' +
-    (Join-Path $ProjectRoot '.venv\Scripts') + ';' + $env:PATH
+    'C:\Program Files\Git\cmd;' +
+    'C:\Program Files\Git\usr\bin;' +
+    (Join-Path $ProjectRoot '.venv\Scripts') + ';' +
+    'C:\Program Files (x86)\Microsoft Visual Studio\Installer;' +
+    'C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;' +
+    'C:\Windows\System32\WindowsPowerShell\v1.0'
 
 $VsDevCmd = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat'
 if (-not (Test-Path -LiteralPath $VsDevCmd)) {

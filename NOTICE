@@ -5,14 +5,19 @@ Copyright 2026 Windows AMD vLLM Multi-GPU contributors.
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
-This project contains compatibility patches and integration code for vLLM,
-which is licensed under the Apache License, Version 2.0:
+The external llama.cpp/ROCmFPX RCCL ABI shim and its D3D12 integration are
+original project code under Apache-2.0. A packaged `rccl-real.dll` remains an
+RCCL/NCCL-derived binary under the upstream terms described below.
+
+This project contains external integration code for vLLM, which is licensed
+under the Apache License, Version 2.0:
 https://github.com/vllm-project/vllm
-The exact LICENSE and NOTICE from the pinned vLLM fork revision are reproduced
-as LICENSES/VLLM-UPSTREAM-LICENSE.txt and
-LICENSES/VLLM-UPSTREAM-NOTICE.txt. The version-locked patches under
-patches/vllm identify every modified file; this is not an unmodified upstream
-work.
+The current host is charlie12345/vLLM_for_AMD at the exact clean commit recorded
+in pins/rocm10-vllm-v0.28.0.json. It is fetched and built separately; the
+current plugin installer applies no vLLM source patch. The exact vLLM LICENSE
+and NOTICE are reproduced as LICENSES/VLLM-UPSTREAM-LICENSE.txt and
+LICENSES/VLLM-UPSTREAM-NOTICE.txt. The old patches/vllm directory and
+pins/nightly-2026-07-28.json are retained only as v0.27 development provenance.
 
 The optional native RCCL build is based on AMD RCCL and NVIDIA NCCL source.
 RCCL/NCCL-derived source patches and binaries remain subject to their
@@ -43,11 +48,11 @@ and are not distributed by this repository. Do not redistribute an
 experimental amdhip64_7.dll without independently satisfying every applicable
 AMD and third-party binary-license term.
 
-The optional current test weights are the AWQ quantization published as
+The optional Mistral test weights are the AWQ quantization published as
 stelterlab/Mistral-Small-24B-Instruct-2501-AWQ, derived from Mistral Small 24B.
 The model card declares Apache-2.0. The exact quantized revision and the
 historical Mistral BF16 baseline revision are recorded in
-pins/nightly-2026-07-28.json. Model weights are downloaded directly from
+the pin manifests under pins/. Model weights are downloaded directly from
 Hugging Face and are not distributed by this repository.
 
 The Qwen3.8-27B BF16 benchmark used Qwen/Qwen3.8-27B revision
@@ -63,17 +68,14 @@ z-lab/Qwen3.8-27B-DFlash2 revision
 Apache-2.0. Both are downloaded directly to local storage, retain their target
 model attribution, and are not distributed by this repository.
 
-Ling 3.0 support was ported from InclusionAI's public vLLM support branch and
-subsequent vLLM commits recorded in pins/nightly-2026-07-28.json. Optional
-inclusionAI/Ling-3.0-tiny BF16, FP8, and INT4 repositories declare the MIT
-License. The pinned BF16 weights were downloaded only to local storage for
+Ling 3.0 support is present in vLLM v0.28 and the pinned Windows AMD vLLM host.
+Its historical port sources are recorded in pins/nightly-2026-07-28.json.
+Optional inclusionAI/Ling-3.0-tiny BF16, FP8, and INT4 repositories declare the
+MIT License. The pinned BF16 weights were downloaded only to local storage for
 real-weight benchmarking; model weights are not distributed by this repository.
 
-The Windows ROCm Triton MLA prefill fallback is original integration code by
-Carlo Pasquale, Copyright 2026, distributed under Apache-2.0 as part of this
-project. It modifies the Apache-2.0 vLLM source tree through a clearly named,
-version-locked patch and retains vLLM's upstream notices.
-
-The dynamic compile-range dispatcher correction and its regression test are
-also original Carlo Pasquale project contributions distributed under
-Apache-2.0 in a separate, clearly named version-locked patch.
+The Windows ROCm Triton MLA prefill fallback and dynamic compile-range
+dispatcher correction are original project contributions by Carlo Pasquale,
+Copyright 2026, distributed under Apache-2.0. They are maintained in the
+separate Windows AMD vLLM host; their prior plugin-repository patches remain
+archival provenance and are not applied by the current installer.

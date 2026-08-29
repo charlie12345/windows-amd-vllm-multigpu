@@ -14,6 +14,8 @@ if (-not (Test-Path -LiteralPath $ProbePython)) {
     throw 'Run scripts\bootstrap-nightly.ps1 first.'
 }
 
+& (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') -RequiredCount 2
+
 Write-Host 'Building the native HIP transport' -ForegroundColor Cyan
 & (Join-Path $PSScriptRoot 'build-native.cmd')
 if ($LASTEXITCODE -ne 0) {

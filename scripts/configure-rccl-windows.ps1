@@ -4,7 +4,14 @@
 param(
     [switch]$Fresh,
     [ValidateSet('Full', 'Vllm', 'Minimal')]
-    [string]$FunctionProfile = 'Full'
+    [string]$FunctionProfile = 'Full',
+    [ValidateSet(
+        'gfx1030',
+        'gfx1100', 'gfx1101', 'gfx1102', 'gfx1103',
+        'gfx1150', 'gfx1151', 'gfx1152', 'gfx1153',
+        'gfx1200', 'gfx1201'
+    )]
+    [string]$GpuArch = 'gfx1201'
 )
 
 Set-StrictMode -Version Latest
@@ -45,9 +52,13 @@ if ($Fresh -and (Test-Path -LiteralPath $Build)) {
     Remove-Item -LiteralPath $resolvedBuild -Recurse -Force
 }
 
-$RocmRoot = (& $Python -m rocm_sdk path --root).Trim()
+if ($env:ROCM_ROOT) {
+    $RocmRoot = [IO.Path]::GetFullPath($env:ROCM_ROOT)
+} else {
+    $RocmRoot = (& $Python -m rocm_sdk path --root).Trim()
+}
 if (-not $RocmRoot) {
-    throw 'Could not locate the ROCm SDK wheel root.'
+    throw 'Could not locate ROCm. Set ROCM_ROOT or install rocm[devel].'
 }
 $RocmRootForward = $RocmRoot.Replace('\', '/')
 $ToolchainForward = $Toolchain.Replace('\', '/')
@@ -57,8 +68,12 @@ $env:HIP_PLATFORM = 'amd'
 $env:PATH = (Join-Path $RocmRoot 'bin') + ';' +
     (Join-Path $RocmRoot 'lib\llvm\bin') + ';' +
     (Join-Path $ProjectRoot 'tools') + ';' +
-    'C:\Program Files\Git\bin;' +
-    (Join-Path $ProjectRoot '.venv\Scripts') + ';' + $env:PATH
+    'C:\Program Files\Git\cmd;' +
+    'C:\Program Files\Git\usr\bin;' +
+    (Join-Path $ProjectRoot '.venv\Scripts') + ';' +
+    'C:\Program Files (x86)\Microsoft Visual Studio\Installer;' +
+    'C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;' +
+    'C:\Windows\System32\WindowsPowerShell\v1.0'
 
 $VsDevCmd = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat'
 if (-not (Test-Path -LiteralPath $VsDevCmd)) {
@@ -73,9 +88,9 @@ $Arguments = @(
     "-DROCM_PATH=$RocmRootForward",
     "-DROCMCORE_PATH=$RocmRootForward",
     "-Dhipify-perl_executable=$HipifyLauncher",
-    '-DEXPLICIT_ROCM_VERSION=7.15.0',
+    '-DEXPLICIT_ROCM_VERSION=10.0.0',
     '-DCMAKE_BUILD_TYPE=Release',
-    '-DGPU_TARGETS=gfx1201',
+    "-DGPU_TARGETS=$GpuArch",
     '-DBUILD_SHARED_LIBS=ON',
     '-DBUILD_TESTS=OFF',
     '-DBUILD_PROFILER_INSPECTOR=OFF',

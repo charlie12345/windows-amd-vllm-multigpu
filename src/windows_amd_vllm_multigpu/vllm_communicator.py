@@ -39,13 +39,20 @@ class WindowsAmdMultiGpuCommunicator(DeviceCommunicatorBase):
             if self.world_size == 2 and self.rccl is None and self.d3d12 is None
             else None
         )
-        self._trace_enabled = os.environ.get(
-            "WAVMG_TRACE_COLLECTIVES", ""
-        ).lower() in {"1", "true", "yes", "on"}
+        self._trace_enabled = os.environ.get("WAVMG_TRACE_COLLECTIVES", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self._traced_operations: set[str] = set()
         if self._trace_enabled:
             if self.d3d12 is not None:
-                all_reduce_backend = "d3d12"
+                all_reduce_backend = (
+                    "hybrid(d3d12="
+                    f"{self.d3d12.min_size_bytes}..{self.d3d12.max_size_bytes},"
+                    "rccl=fallback)"
+                )
             elif self.rccl is not None:
                 all_reduce_backend = "rccl"
             elif self.fast_all_reduce is not None:
@@ -61,29 +68,44 @@ class WindowsAmdMultiGpuCommunicator(DeviceCommunicatorBase):
                 flush=True,
             )
 
-    def _trace_once(self, operation: str, backend: str) -> None:
-        trace_key = f"{operation}:{backend}"
+    def _trace_once(
+        self,
+        operation: str,
+        backend: str,
+        tensor: torch.Tensor | None = None,
+    ) -> None:
+        size_bytes = None
+        dtype = None
+        shape = None
+        if tensor is not None:
+            size_bytes = tensor.numel() * tensor.element_size()
+            dtype = tensor.dtype
+            shape = tuple(tensor.shape)
+        trace_key = f"{operation}:{backend}:{dtype}:{size_bytes}:{shape}"
         if not self._trace_enabled or trace_key in self._traced_operations:
             return
         self._traced_operations.add(trace_key)
+        details = ""
+        if tensor is not None:
+            details = f" dtype={dtype} bytes={size_bytes} shape={shape}"
         print(
             f"WAVMG_COLLECTIVE rank={self.rank_in_group} "
-            f"operation={operation} backend={backend}",
+            f"operation={operation} backend={backend}{details}",
             flush=True,
         )
 
     def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
         if self.d3d12 is not None and self.d3d12.can_handle(input_):
-            self._trace_once("all_reduce", "d3d12")
+            self._trace_once("all_reduce", "d3d12", input_)
             return self.d3d12.all_reduce(input_)
         if self.rccl is not None:
             backend = "rccl-d3d12-fallback" if self.d3d12 is not None else "rccl"
-            self._trace_once("all_reduce", backend)
+            self._trace_once("all_reduce", backend, input_)
             return self.rccl.all_reduce(input_)
         if self.fast_all_reduce is not None:
-            self._trace_once("all_reduce", "mapped-host")
+            self._trace_once("all_reduce", "mapped-host", input_)
             return self.fast_all_reduce.all_reduce(input_)
-        self._trace_once("all_reduce", "gloo-host")
+        self._trace_once("all_reduce", "gloo-host", input_)
         return self.transport.all_reduce(input_)
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:

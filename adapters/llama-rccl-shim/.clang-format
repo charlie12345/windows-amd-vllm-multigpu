@@ -1,0 +1,8 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ContinuationIndentWidth: 8
+ColumnLimit: 100
+PointerAlignment: Middle
+ReferenceAlignment: Pointer
+AllowShortCaseLabelsOnASingleLine: true
+SortIncludes: CaseSensitive

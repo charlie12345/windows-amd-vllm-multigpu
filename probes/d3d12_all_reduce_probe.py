@@ -8,11 +8,19 @@ import multiprocessing as mp
 from queue import Empty
 import socket
 import time
+import traceback
 
 
 WORLD_SIZE = 2
 TIMEOUT_SECONDS = 180
-SIZES = [4 * 1024, 64 * 1024, 1024 * 1024, 8 * 1024 * 1024, 64 * 1024 * 1024]
+SIZES = [
+    4 * 1024,
+    64 * 1024,
+    235_520,  # Qwen3.8 speculative collective that previously faulted.
+    1024 * 1024,
+    8 * 1024 * 1024,
+    64 * 1024 * 1024,
+]
 DTYPES = ("float16", "float32", "bfloat16")
 
 
@@ -95,12 +103,11 @@ def _rank_main(rank: int, port: int, results: mp.Queue) -> None:
                         "correct": correct,
                     }
                 )
-        record["passed"] = all(
-            bool(item["correct"]) for item in record["results"]
-        )
+        record["passed"] = all(bool(item["correct"]) for item in record["results"])
     except Exception as error:
         record["passed"] = False
         record["error"] = f"{type(error).__name__}: {error}"
+        record["traceback"] = traceback.format_exc()
     finally:
         if communicator is not None:
             try:

@@ -39,10 +39,15 @@ $Vllm = Join-Path $ProjectRoot '.venv-vllm\Scripts\vllm.exe'
 $Resolver = Join-Path $ProjectRoot 'scripts\download-large-test-model.py'
 $RcclDll = Join-Path $ProjectRoot 'build\rccl-windows\rccl.dll'
 $D3D12Dll = Join-Path $ProjectRoot 'build\native\wavmg_d3d12_v1.dll'
-foreach ($Required in ($Python, $Vllm, $Resolver, $RcclDll, $D3D12Dll)) {
+$HipDll = Join-Path $ProjectRoot 'build\native\wavmg_hip_v1.dll'
+foreach ($Required in ($Python, $Vllm, $Resolver, $RcclDll, $D3D12Dll, $HipDll)) {
     if (-not (Test-Path -LiteralPath $Required)) {
         throw "Missing prerequisite: $Required"
     }
+}
+if ($Mode -ne 'Single') {
+    & (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') `
+        -RequiredCount 2
 }
 if (($InputLen + $OutputLen) -gt $MaxModelLen) {
     throw 'InputLen plus OutputLen cannot exceed MaxModelLen.'
@@ -69,6 +74,7 @@ $env:VLLM_PLUGINS = 'windows_amd_multigpu'
 $env:VLLM_ROCM_USE_RDNA_W4A16 = '1'
 $env:WAVMG_RCCL_DLL = $RcclDll
 $env:WAVMG_D3D12_DLL = $D3D12Dll
+$env:WAVMG_HIP_DLL = $HipDll
 $env:WAVMG_TRACE_COLLECTIVES = '0'
 $env:HF_HUB_OFFLINE = '1'
 $env:NCCL_DEBUG = 'WARN'

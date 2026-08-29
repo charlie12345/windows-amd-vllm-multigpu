@@ -84,7 +84,13 @@ def _load_rccl() -> ctypes.CDLL:
         if directory.is_dir():
             os.add_dll_directory(str(directory))
 
-    library = ctypes.CDLL(str(root / "build" / "rccl-windows" / "rccl.dll"))
+    configured = os.environ.get("WAVMG_RCCL_DLL")
+    rccl_path = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else root / "build" / "rccl-windows" / "rccl.dll"
+    )
+    library = ctypes.CDLL(str(rccl_path))
     library.ncclGetUniqueId.argtypes = [ctypes.POINTER(NcclUniqueId)]
     library.ncclGetUniqueId.restype = ctypes.c_int
     library.ncclCommInitRank.argtypes = [
@@ -157,11 +163,15 @@ def _check(library: ctypes.CDLL, result: int, operation: str) -> None:
 
 
 def _launch_collective(
-    library: ctypes.CDLL, send_pointer: int, receive_pointer: int, comm: ctypes.c_void_p
+    library: ctypes.CDLL,
+    send_pointer: int,
+    receive_pointer: int,
+    comm: ctypes.c_void_p,
+    stream_pointer: int,
 ) -> tuple[int, str]:
     send = ctypes.c_void_p(send_pointer)
     receive = ctypes.c_void_p(receive_pointer)
-    stream = ctypes.c_void_p()
+    stream = ctypes.c_void_p(stream_pointer)
     if OPERATION == "all_reduce":
         return (
             library.wavmg_all_reduce(
@@ -171,9 +181,7 @@ def _launch_collective(
         )
     if OPERATION == "all_gather":
         return (
-            library.ncclAllGather(
-                send, receive, COUNT, NCCL_DATA_TYPE, comm, stream
-            ),
+            library.ncclAllGather(send, receive, COUNT, NCCL_DATA_TYPE, comm, stream),
             "ncclAllGather",
         )
     if OPERATION == "reduce_scatter":
@@ -184,9 +192,7 @@ def _launch_collective(
             "ncclReduceScatter",
         )
     return (
-        library.ncclBroadcast(
-            send, receive, COUNT, NCCL_DATA_TYPE, 0, comm, stream
-        ),
+        library.ncclBroadcast(send, receive, COUNT, NCCL_DATA_TYPE, 0, comm, stream),
         "ncclBroadcast",
     )
 
@@ -227,9 +233,7 @@ def _rank_main(rank: int, unique_id_bytes: bytes, results: mp.Queue) -> None:
         unique_id = NcclUniqueId.from_buffer_copy(unique_id_bytes)
         _check(
             library,
-            library.ncclCommInitRank(
-                ctypes.byref(comm), WORLD_SIZE, unique_id, rank
-            ),
+            library.ncclCommInitRank(ctypes.byref(comm), WORLD_SIZE, unique_id, rank),
             "ncclCommInitRank",
         )
         init_returned = True
@@ -244,9 +248,7 @@ def _rank_main(rank: int, unique_id_bytes: bytes, results: mp.Queue) -> None:
         receive_elements = COUNT * (WORLD_SIZE if OPERATION == "all_gather" else 1)
         send_byte_count = send_elements * ELEMENT_SIZE
         receive_byte_count = receive_elements * ELEMENT_SIZE
-        send_host = ctypes.create_string_buffer(
-            _encode_scalar(value) * send_elements
-        )
+        send_host = ctypes.create_string_buffer(_encode_scalar(value) * send_elements)
         receive_host = ctypes.create_string_buffer(receive_byte_count)
         send_pointer = hip.malloc(send_byte_count)
         receive_pointer = hip.malloc(receive_byte_count)
@@ -256,20 +258,22 @@ def _rank_main(rank: int, unique_id_bytes: bytes, results: mp.Queue) -> None:
             send_byte_count,
             HIP_MEMCPY_HOST_TO_DEVICE,
         )
+        test_stream = torch.cuda.Stream(device=device)
+        stream_pointer = int(test_stream.cuda_stream)
         collective_called = True
         for _ in range(WARMUP_ITERATIONS):
             result, operation_name = _launch_collective(
-                library, send_pointer, receive_pointer, comm
+                library, send_pointer, receive_pointer, comm, stream_pointer
             )
             _check(library, result, operation_name)
-        hip.device_synchronize()
+        hip.stream_synchronize(stream_pointer)
         started = time.perf_counter()
         for _ in range(ITERATIONS):
             result, operation_name = _launch_collective(
-                library, send_pointer, receive_pointer, comm
+                library, send_pointer, receive_pointer, comm, stream_pointer
             )
             _check(library, result, operation_name)
-        hip.device_synchronize()
+        hip.stream_synchronize(stream_pointer)
         elapsed_seconds = time.perf_counter() - started
         hip.memcpy(
             ctypes.addressof(receive_host),
@@ -282,8 +286,7 @@ def _rank_main(rank: int, unique_id_bytes: bytes, results: mp.Queue) -> None:
         received = receive_host.raw[:receive_byte_count]
         if OPERATION == "all_gather":
             expected_payload = b"".join(
-                _encode_scalar(float(peer + 1)) * COUNT
-                for peer in range(WORLD_SIZE)
+                _encode_scalar(float(peer + 1)) * COUNT for peer in range(WORLD_SIZE)
             )
         elif OPERATION == "broadcast":
             expected = 1.0
@@ -327,9 +330,9 @@ def _rank_main(rank: int, unique_id_bytes: bytes, results: mp.Queue) -> None:
                     try:
                         hip.free(pointer)
                     except Exception as error:
-                        record.setdefault(
-                            "memory_cleanup_errors", []
-                        ).append(f"{type(error).__name__}: {error}")
+                        record.setdefault("memory_cleanup_errors", []).append(
+                            f"{type(error).__name__}: {error}"
+                        )
         if library is not None and comm.value:
             try:
                 if successful:

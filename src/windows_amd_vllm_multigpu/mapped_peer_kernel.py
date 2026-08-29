@@ -8,12 +8,18 @@ from pathlib import Path
 
 import torch
 
+from .runtime_paths import rocm_bin_directories
+
 
 class MappedPeerKernel:
     def __init__(self, library_path: str | os.PathLike[str] | None = None) -> None:
         if library_path is None:
-            project_root = Path(__file__).resolve().parents[2]
-            library_path = project_root / "build" / "native" / "wavmg_hip_v1.dll"
+            configured = os.environ.get("WAVMG_HIP_DLL")
+            if configured:
+                library_path = configured
+            else:
+                project_root = Path(__file__).resolve().parents[2]
+                library_path = project_root / "build" / "native" / "wavmg_hip_v1.dll"
         library_path = Path(library_path).resolve()
         if not library_path.is_file():
             raise FileNotFoundError(
@@ -21,9 +27,10 @@ class MappedPeerKernel:
                 "run scripts\\build-native.cmd"
             )
 
-        site_packages = Path(torch.__file__).resolve().parent.parent
-        runtime_dir = site_packages / "_rocm_sdk_devel" / "bin"
-        self._dll_directory = os.add_dll_directory(str(runtime_dir))
+        self._dll_directories = [
+            os.add_dll_directory(str(directory)) for directory in rocm_bin_directories()
+        ]
+        self._dll_directories.append(os.add_dll_directory(str(library_path.parent)))
         self._library = ctypes.WinDLL(str(library_path))
         self._library.wavmg_add_f32.argtypes = [
             ctypes.c_void_p,
@@ -32,7 +39,11 @@ class MappedPeerKernel:
             ctypes.c_size_t,
         ]
         self._library.wavmg_add_f32.restype = ctypes.c_int
-        for name in ("wavmg_add_f32_async", "wavmg_add_f16_async", "wavmg_add_bf16_async"):
+        for name in (
+            "wavmg_add_f32_async",
+            "wavmg_add_f16_async",
+            "wavmg_add_bf16_async",
+        ):
             function = getattr(self._library, name)
             function.argtypes = [
                 ctypes.c_void_p,
@@ -42,6 +53,13 @@ class MappedPeerKernel:
                 ctypes.c_void_p,
             ]
             function.restype = ctypes.c_int
+        self._library.wavmg_copy_async.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+        ]
+        self._library.wavmg_copy_async.restype = ctypes.c_int
         for name in (
             "wavmg_all_reduce_f32_async",
             "wavmg_all_reduce_f16_async",
@@ -118,6 +136,26 @@ class MappedPeerKernel:
         if code:
             raise RuntimeError(f"mapped-peer add failed with HIP error {code}")
 
+    def copy_async(
+        self,
+        source: torch.Tensor,
+        destination_pointer: int,
+        stream: torch.cuda.Stream | None = None,
+    ) -> None:
+        """Copy a contiguous tensor into mapped external memory on a HIP stream."""
+        if not source.is_contiguous():
+            raise ValueError("native copy source must be contiguous")
+        if stream is None:
+            stream = torch.cuda.current_stream(source.device)
+        code = self._library.wavmg_copy_async(
+            ctypes.c_void_p(source.data_ptr()),
+            ctypes.c_void_p(destination_pointer),
+            source.numel() * source.element_size(),
+            ctypes.c_void_p(stream.cuda_stream),
+        )
+        if code:
+            raise RuntimeError(f"mapped-peer copy failed with HIP error {code}")
+
     def all_reduce_async(
         self,
         local: torch.Tensor,
@@ -162,4 +200,6 @@ class MappedPeerKernel:
             ctypes.c_void_p(stream.cuda_stream),
         )
         if code:
-            raise RuntimeError(f"native all-reduce enqueue failed with HIP error {code}")
+            raise RuntimeError(
+                f"native all-reduce enqueue failed with HIP error {code}"
+            )

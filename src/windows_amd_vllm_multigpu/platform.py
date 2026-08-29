@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 from vllm.platforms.rocm import RocmPlatform
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class WindowsAmdMultiGpuPlatform(RocmPlatform):
@@ -13,8 +19,7 @@ class WindowsAmdMultiGpuPlatform(RocmPlatform):
     @classmethod
     def get_device_communicator_cls(cls) -> str:
         return (
-            "windows_amd_vllm_multigpu.vllm_communicator."
-            "WindowsAmdMultiGpuCommunicator"
+            "windows_amd_vllm_multigpu.vllm_communicator.WindowsAmdMultiGpuCommunicator"
         )
 
     @classmethod
@@ -59,4 +64,11 @@ class WindowsAmdMultiGpuPlatform(RocmPlatform):
         if enabled:
             raise ValueError(f"unsupported Windows AMD parallel modes: {enabled}")
         if getattr(parallel, "enable_expert_parallel", False):
-            raise ValueError("expert parallel/all-to-all is not implemented")
+            if getattr(parallel, "use_all2all", False):
+                raise ValueError("expert-parallel all-to-all is not implemented")
+            if tp != 2 or not _env_enabled("WAVMG_ALLOW_TP_EXPERT_PARALLEL"):
+                raise ValueError(
+                    "TP-local expert parallelism is experimental; set "
+                    "WAVMG_ALLOW_TP_EXPERT_PARALLEL=1 to enable TP=2 EP without "
+                    "all-to-all"
+                )

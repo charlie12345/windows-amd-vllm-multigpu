@@ -26,6 +26,7 @@ if ($MaxNumBatchedTokens -lt $MaxNumSeqs) {
 }
 
 $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+& (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') -RequiredCount 2
 $Python = Join-Path $ProjectRoot '.venv-vllm\Scripts\python.exe'
 $Vllm = Join-Path $ProjectRoot '.venv-vllm\Scripts\vllm.exe'
 $Resolver = Join-Path $ProjectRoot 'scripts\download-large-test-model.py'

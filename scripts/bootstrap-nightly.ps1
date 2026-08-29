@@ -1,22 +1,32 @@
 <#
 .SYNOPSIS
-    Create an isolated AMD Windows PyTorch/Gloo probe environment.
+    Create the isolated ROCm 10 PyTorch/native-transport environment.
 
 .DESCRIPTION
-    Installs the exact packages recorded in pins/nightly-2026-07-28.json into
-    this repository's .venv. No global packages or vLLM checkout are changed.
+    Installs the exact packages recorded in pins/rocm10-vllm-v0.28.0.json
+    into this repository's .venv. No global packages or engine source tree is
+    changed. The historical filename of this script is retained for compatible
+    automation; it no longer installs a nightly ROCm stack.
 #>
 #Requires -Version 5.1
 
 [CmdletBinding()]
-param()
+param(
+    [ValidateSet(
+        'gfx1030',
+        'gfx1100', 'gfx1101', 'gfx1102', 'gfx1103',
+        'gfx1150', 'gfx1151', 'gfx1152', 'gfx1153',
+        'gfx1200', 'gfx1201'
+    )]
+    [string]$GpuArch = 'gfx1201'
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-$PinPath = Join-Path $ProjectRoot 'pins\nightly-2026-07-28.json'
+$PinPath = Join-Path $ProjectRoot 'pins\rocm10-vllm-v0.28.0.json'
 $ProbeVenv = Join-Path $ProjectRoot '.venv'
 $ProbePython = Join-Path $ProbeVenv 'Scripts\python.exe'
 $Pins = Get-Content -Raw -LiteralPath $PinPath | ConvertFrom-Json
@@ -30,28 +40,30 @@ if (-not (Test-Path -LiteralPath $ProbePython)) {
     }
 }
 
-& $Uv pip install `
-    --python $ProbePython `
-    "cmake==$($Pins.cmake)" `
+$BuildToolArgs = @(
+    'pip', 'install',
+    '--python', $ProbePython,
+    "cmake==$($Pins.cmake)",
     "ninja==$($Pins.ninja)"
+)
+& $Uv @BuildToolArgs
 if ($LASTEXITCODE -ne 0) {
     throw 'Installing the pinned native build tools failed.'
 }
 
-$Packages = @(
+$RuntimeArgs = @(
+    'pip', 'install',
+    '--python', $ProbePython,
+    '--extra-index-url', $Pins.pytorch_index_url,
+    '--extra-index-url', $Pins.rocm_index_url,
+    '--index-strategy', 'unsafe-best-match',
     "numpy==$($Pins.numpy)",
-    "torch==$($Pins.torch)",
-    "rocm[$($Pins.rocm_extra)]==$($Pins.rocm)",
-    $Pins.amd_torch_device
+    "torch[device-$GpuArch]==$($Pins.torch)",
+    "rocm[devel,device-$GpuArch]==$($Pins.rocm)"
 )
-
-& $Uv pip install `
-    --python $ProbePython `
-    --index-url $Pins.index_url `
-    --index-strategy unsafe-best-match `
-    @Packages
+& $Uv @RuntimeArgs
 if ($LASTEXITCODE -ne 0) {
-    throw 'The pinned AMD nightly installation failed.'
+    throw 'The pinned AMD ROCm 10 installation failed.'
 }
 
 & $Uv pip install --python $ProbePython --no-deps --editable $ProjectRoot
@@ -59,6 +71,7 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Installing the local transport package failed.'
 }
 
+$env:WAVMG_GPU_ARCH = $GpuArch
 & $ProbePython (Join-Path $ProjectRoot 'probes\environment_probe.py')
 if ($LASTEXITCODE -ne 0) {
     throw 'The environment probe failed.'

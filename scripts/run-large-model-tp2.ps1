@@ -14,6 +14,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+& (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') -RequiredCount 2
 $Python = Join-Path $ProjectRoot '.venv-vllm\Scripts\python.exe'
 $Resolver = Join-Path $ProjectRoot 'scripts\download-large-test-model.py'
 if (-not (Test-Path -LiteralPath $Python)) {
@@ -39,6 +40,7 @@ $ModelPath = $ModelLine.Substring('WAVMG_MODEL_PATH='.Length)
 
 $env:WAVMG_RCCL_DLL = Join-Path $ProjectRoot 'build\rccl-windows\rccl.dll'
 $env:WAVMG_D3D12_DLL = Join-Path $ProjectRoot 'build\native\wavmg_d3d12_v1.dll'
+$env:WAVMG_HIP_DLL = Join-Path $ProjectRoot 'build\native\wavmg_hip_v1.dll'
 $env:NCCL_DEBUG = 'WARN'
 $env:NCCL_RAS_ENABLE = '0'
 $env:NCCL_SHM_DISABLE = '1'

@@ -1,40 +1,28 @@
-$ErrorActionPreference = "Stop"
-$ProjectRoot = Split-Path -Parent $PSScriptRoot
-$Pins = Get-Content (Join-Path $ProjectRoot "pins\nightly-2026-07-28.json") |
-    ConvertFrom-Json
-$VllmRoot = Join-Path $ProjectRoot "sandbox\vllm"
-$Patches = @(
-    "patches\vllm\fb9fb8c5-windows-pipeconnection.patch",
-    "patches\vllm\fb9fb8c5-dflash2-upstream.patch",
-    "patches\vllm\fb9fb8c5-windows-cooperative-engine-shutdown.patch",
-    "patches\vllm\fb9fb8c5-ling3-upstream.patch",
-    "patches\vllm\fb9fb8c5-windows-rocm-triton-mla-prefill.patch",
-    "patches\vllm\fb9fb8c5-compile-ranges-without-compile-sizes.patch",
-    "patches\vllm\fb9fb8c5-qwen35-standalone-mtp.patch"
+<#
+.SYNOPSIS
+    Compatibility wrapper for the former vLLM patch installer.
+
+.DESCRIPTION
+    v0.2.0-rc2 no longer applies source patches to vLLM. Required Windows host
+    changes live in charlie12345/vLLM_for_AMD. This wrapper remains so older
+    automation fails closed through the read-only host verifier instead of
+    silently modifying the engine checkout.
+#>
+#Requires -Version 5.1
+
+[CmdletBinding()]
+param(
+    [string]$VllmRoot
 )
 
-$ActualCommit = (git -C $VllmRoot rev-parse HEAD).Trim()
-if ($ActualCommit -ne $Pins.vllm_commit) {
-    throw "Refusing to patch vLLM $ActualCommit; expected $($Pins.vllm_commit)"
-}
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
-foreach ($RelativePatch in $Patches) {
-    $Patch = Join-Path $ProjectRoot $RelativePatch
-    git -C $VllmRoot apply --check $Patch 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        git -C $VllmRoot apply $Patch
-        if ($LASTEXITCODE -ne 0) {
-            throw "vLLM patch application failed: $RelativePatch"
-        }
-        Write-Host "Applied pinned vLLM patch: $RelativePatch"
-        continue
-    }
-
-    git -C $VllmRoot apply --reverse --check $Patch 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "Pinned vLLM patch is already applied: $RelativePatch"
-        continue
-    }
-
-    throw "Pinned vLLM patch neither applies nor appears applied: $RelativePatch"
+Write-Warning (
+    'apply-vllm-patches.ps1 is retired: the plugin now applies zero vLLM ' +
+    'patches. Running the read-only host verifier.'
+)
+& (Join-Path $PSScriptRoot 'verify-vllm-host.ps1') -VllmRoot $VllmRoot
+if ($LASTEXITCODE -ne 0) {
+    throw 'Windows AMD vLLM host verification failed.'
 }
