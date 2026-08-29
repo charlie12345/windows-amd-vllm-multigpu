@@ -48,6 +48,17 @@ __global__ void wavmg_add_bf16_kernel(
   }
 }
 
+__global__ void wavmg_copy_bytes_kernel(
+    const unsigned char* source,
+    unsigned char* destination,
+    std::size_t size_bytes) {
+  const std::size_t index =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index < size_bytes) {
+    destination[index] = source[index];
+  }
+}
+
 template <typename Kernel, typename Value>
 int launch_add(
     Kernel kernel,
@@ -197,6 +208,30 @@ WAVMG_EXPORT int wavmg_add_bf16_async(
     void* stream) {
   return launch_add(
       wavmg_add_bf16_kernel, local, peer_host, output, count, stream);
+}
+
+WAVMG_EXPORT int wavmg_copy_async(
+    const void* source,
+    void* destination,
+    std::size_t size_bytes,
+    void* stream_pointer) {
+  if (size_bytes == 0) {
+    return static_cast<int>(hipSuccess);
+  }
+  constexpr unsigned int threads = 256;
+  const unsigned int blocks =
+      static_cast<unsigned int>((size_bytes + threads - 1) / threads);
+  hipStream_t stream = reinterpret_cast<hipStream_t>(stream_pointer);
+  hipLaunchKernelGGL(
+      wavmg_copy_bytes_kernel,
+      dim3(blocks),
+      dim3(threads),
+      0,
+      stream,
+      static_cast<const unsigned char*>(source),
+      static_cast<unsigned char*>(destination),
+      size_bytes);
+  return static_cast<int>(hipGetLastError());
 }
 
 WAVMG_EXPORT int wavmg_add_f32(

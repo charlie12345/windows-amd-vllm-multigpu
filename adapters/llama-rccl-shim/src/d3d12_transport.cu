@@ -295,22 +295,36 @@ __global__ void add_kernel(const T * local, const T * peer, T * output, std::siz
     }
 }
 
+__global__ void copy_bytes_kernel(const unsigned char * source, unsigned char * destination,
+                                  std::size_t size_bytes) {
+    const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < size_bytes) {
+        destination[index] = source[index];
+    }
+}
+
 template <typename T>
 void enqueue_rank(shared_buffer & own, shared_buffer & peer, const void * send, void * recv,
-                  void * peer_copy, std::size_t count, std::uint64_t ready_value,
-                  std::uint64_t consumed_value, hipStream_t stream) {
+                  std::size_t count, std::uint64_t ready_value, std::uint64_t consumed_value,
+                  hipStream_t stream) {
     const std::size_t nbytes = count * sizeof(T);
-    check_hip(hipMemcpyAsync(own.device_pointer, send, nbytes, hipMemcpyDefault, stream),
-              "hipMemcpyAsync(input to D3D12)");
+    if (nbytes == 0) {
+        return;
+    }
+    constexpr unsigned int threads = 256;
+    const unsigned int copy_blocks =
+            static_cast<unsigned int>((nbytes + threads - 1) / threads);
+    hipLaunchKernelGGL(copy_bytes_kernel, dim3(copy_blocks), dim3(threads), 0, stream,
+                       static_cast<const unsigned char *>(send),
+                       static_cast<unsigned char *>(own.device_pointer), nbytes);
+    check_hip(hipGetLastError(), "D3D12 AllReduce publish kernel");
     own.signal(ready_value, stream);
     peer.wait(ready_value, stream);
-    check_hip(hipMemcpyAsync(peer_copy, peer.device_pointer, nbytes, hipMemcpyDefault, stream),
-              "hipMemcpyAsync(D3D12 peer to scratch)");
 
-    constexpr unsigned int threads = 256;
     const unsigned int blocks = static_cast<unsigned int>((count + threads - 1) / threads);
     hipLaunchKernelGGL(add_kernel<T>, dim3(blocks), dim3(threads), 0, stream,
-                       static_cast<const T *>(send), static_cast<const T *>(peer_copy),
+                       static_cast<const T *>(send),
+                       static_cast<const T *>(peer.device_pointer),
                        static_cast<T *>(recv), count);
     check_hip(hipGetLastError(), "D3D12 AllReduce add kernel");
     peer.signal(consumed_value, stream);
@@ -328,15 +342,11 @@ class wac_d3d12_transport {
     std::uint64_t epoch = 0;
     std::array<std::unique_ptr<shared_buffer>, 2> own;
     std::array<std::unique_ptr<shared_buffer>, 2> peer;
-    std::array<void *, 2> scratch{};
 
     ~wac_d3d12_transport() {
         for (std::size_t rank = 0; rank < devices.size(); ++rank) {
             (void)hipSetDevice(devices[rank]);
             (void)hipDeviceSynchronize();
-            if (scratch[rank] != nullptr) {
-                (void)hipFree(scratch[rank]);
-            }
         }
     }
 };
@@ -369,9 +379,6 @@ wac_d3d12_transport_ptr wac_d3d12_create(const int devices[2], std::size_t max_s
             transport->peer[rank] = std::make_unique<shared_buffer>();
             transport->peer[rank]->initialize_opener(devices[rank], names[1 - rank],
                                                      max_size_bytes);
-            check_hip(hipSetDevice(devices[rank]), "hipSetDevice");
-            check_hip(hipMalloc(&transport->scratch[rank], max_size_bytes),
-                      "hipMalloc(D3D12 scratch)");
         }
 
         error.clear();
@@ -411,19 +418,18 @@ bool wac_d3d12_allreduce(wac_d3d12_transport & transport, const wac_rank_call ca
             switch (type) {
             case wac_data_type::f32:
                 enqueue_rank<float>(*transport.own[rank], *transport.peer[rank], calls[rank].send,
-                                    calls[rank].recv, transport.scratch[rank], calls[rank].count,
-                                    ready_value, consumed_value, calls[rank].stream);
+                                    calls[rank].recv, calls[rank].count, ready_value,
+                                    consumed_value, calls[rank].stream);
                 break;
             case wac_data_type::f16:
                 enqueue_rank<__half>(*transport.own[rank], *transport.peer[rank], calls[rank].send,
-                                     calls[rank].recv, transport.scratch[rank], calls[rank].count,
-                                     ready_value, consumed_value, calls[rank].stream);
+                                     calls[rank].recv, calls[rank].count, ready_value,
+                                     consumed_value, calls[rank].stream);
                 break;
             case wac_data_type::bf16:
                 enqueue_rank<hip_bfloat16>(*transport.own[rank], *transport.peer[rank],
-                                           calls[rank].send, calls[rank].recv,
-                                           transport.scratch[rank], calls[rank].count, ready_value,
-                                           consumed_value, calls[rank].stream);
+                                           calls[rank].send, calls[rank].recv, calls[rank].count,
+                                           ready_value, consumed_value, calls[rank].stream);
                 break;
             }
         }

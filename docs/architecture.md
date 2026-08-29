@@ -29,19 +29,23 @@ HIP external-memory/semaphore APIs.
 For each two-rank AllReduce, both ranks enqueue the following on the current
 PyTorch HIP stream:
 
-1. copy the local tensor from VRAM to that rank's D3D12 heap;
+1. launch a HIP byte-copy kernel from local VRAM to that rank's D3D12 heap;
 2. signal the rank's cross-adapter timeline fence;
 3. wait for the peer's fence;
-4. copy the peer heap into a temporary local-VRAM tensor;
-5. launch the FP16, FP32, or BF16 local SUM kernel;
-6. signal consumption and wait until the peer consumed the local heap.
+4. launch the FP16, FP32, or BF16 SUM kernel, reading the peer external heap
+   directly and writing the result to local VRAM;
+5. signal consumption and wait until the peer consumed the local heap.
 
 No CPU thread copies tensor payloads or blocks in the hot sequence. D3D12
 cross-adapter heaps are nevertheless L0/system-memory allocations on discrete
 adapters, so the project calls this a GPU-driven cross-adapter path rather than
-VRAM P2P or GPU-direct. Direct HIP-kernel loads from the peer external pointer
-did not provide coherent values on this driver; the validated implementation
-uses the HIP copy engine into local VRAM before reduction.
+VRAM P2P or GPU-direct. The earlier generic direct-load experiment was not
+coherent because it did not use the final publish/fence/consume protocol. The
+validated path uses a custom HIP publish kernel, the D3D12 timeline fences
+above, and a fused reduction load from the peer external pointer. It avoids
+`hipMemcpyAsync` pointer classification, which faulted on ROCm 10 for a
+235,520-byte real-model collective. Exact-value tests cover FP16, FP32, and
+BF16 through 64 MiB.
 
 ## Native Windows RCCL port
 
@@ -117,13 +121,17 @@ disables incompatible built-in custom collectives/static graphs, and supplies
 the native RCCL communicator when `WAVMG_USE_RCCL=1`. With
 `WAVMG_USE_D3D12=1`, the D3D12 communicator takes priority for two-rank
 AllReduce. Without either variable it uses the mapped-host all-reduce. It
-currently validates only TP1/TP2 with PP1 and no additional data,
-decode-context, prefill-context, or expert parallel groups.
+currently validates TP1/TP2 with PP1 and no additional data, decode-context,
+or prefill-context groups. TP-local expert sharding can be enabled explicitly
+with `WAVMG_ALLOW_TP_EXPERT_PARALLEL=1` when TP=2 and vLLM reports
+`parallel_config.use_all2all == False`. It remains disabled by default, and
+configurations requiring All-to-All are rejected.
 
-The vLLM clone lives under ignored `sandbox\vllm`. A pinned patch makes three
-general Windows compatibility fixes: accepts `PipeConnection`, guards the
-missing `os.sched_yield`, and skips Linux `/proc/self/maps` cleanup. The patch
-does not add this transport to the user's vLLM tree.
+The vLLM clone lives under ignored `sandbox\vllm`. The exact pinned
+`charlie12345/vLLM_for_AMD` host includes the general Windows multiprocessing,
+shutdown, compile-range, and ROCm MLA fallback fixes. The verifier requires a
+clean tracked host tree. This repository applies no vLLM patch and registers
+the transport only through vLLM's external platform-plugin entry point.
 
 ## Limits and next work
 

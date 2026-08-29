@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$InstallDirectory,
 
-    [string]$Version = '0.2.0-rc1',
+    [string]$Version = '0.2.0-rc2',
     [string]$RocmLabel = 'rocm10.0',
     [string]$GpuArchitecture = 'gfx1201',
     [string]$OutputDirectory,

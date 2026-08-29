@@ -58,9 +58,10 @@ $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $Vllm = Join-Path $ProjectRoot '.venv-vllm\Scripts\vllm.exe'
 $RcclDll = Join-Path $ProjectRoot 'build\rccl-windows\rccl.dll'
 $D3D12Dll = Join-Path $ProjectRoot 'build\native\wavmg_d3d12_v1.dll'
+$HipDll = Join-Path $ProjectRoot 'build\native\wavmg_hip_v1.dll'
 $RequiredPaths = @($Vllm, $ModelPath)
 if ($Transport -ne 'Single') {
-    $RequiredPaths += @($RcclDll, $D3D12Dll)
+    $RequiredPaths += @($RcclDll, $D3D12Dll, $HipDll)
 }
 foreach ($Required in $RequiredPaths) {
     if (-not (Test-Path -LiteralPath $Required)) {
@@ -99,6 +100,10 @@ if ($UsesDFlash2) {
 }
 
 $TensorParallelSize = if ($Transport -eq 'Single') { 1 } else { 2 }
+if ($TensorParallelSize -eq 2) {
+    & (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') `
+        -RequiredCount 2
+}
 $VisibleDevices = if ($TensorParallelSize -eq 1) { '0' } else { '0,1' }
 $env:HIP_VISIBLE_DEVICES = $VisibleDevices
 $env:CUDA_VISIBLE_DEVICES = $VisibleDevices
@@ -114,6 +119,7 @@ $env:WAVMG_USE_RCCL = if ($TensorParallelSize -eq 2) { '1' } else { '0' }
 $env:WAVMG_USE_D3D12 = if ($Transport -eq 'Hybrid') { '1' } else { '0' }
 $env:WAVMG_RCCL_DLL = $RcclDll
 $env:WAVMG_D3D12_DLL = $D3D12Dll
+$env:WAVMG_HIP_DLL = $HipDll
 $env:WAVMG_TRACE_COLLECTIVES = if ($TraceCollectives) { '1' } else { '0' }
 $env:HF_HUB_OFFLINE = '1'
 $env:NCCL_DEBUG = 'WARN'

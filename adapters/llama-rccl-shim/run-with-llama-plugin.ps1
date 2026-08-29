@@ -11,6 +11,8 @@ param(
     [ValidateSet('hybrid', 'd3d12', 'rccl')]
     [string]$Mode = 'hybrid',
 
+    [switch]$EnableExperimentalLlamaRccl,
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExecutableArguments
 )
@@ -35,13 +37,31 @@ foreach ($Dll in @('rccl.dll', 'rccl-real.dll')) {
     }
 }
 
+$Adapters = @(Get-PnpDevice -Class Display -PresentOnly -ErrorAction Stop |
+    Where-Object { $_.FriendlyName -match 'AMD|Radeon' })
+if ($Adapters.Count -lt 2) {
+    throw "Detected $($Adapters.Count) AMD adapter(s); two are required."
+}
+$Unhealthy = @($Adapters | Where-Object { $_.Status -ne 'OK' })
+if ($Unhealthy.Count -gt 0) {
+    $Details = ($Unhealthy | ForEach-Object {
+        '{0}: status={1}, problem={2}' -f $_.FriendlyName, $_.Status, $_.Problem
+    }) -join '; '
+    throw "Refusing multi-GPU launch with an unhealthy AMD adapter: $Details"
+}
+
 $env:ROCM_PATH = $RocmRoot
 $env:HIP_PATH = $RocmRoot
 $env:HIP_PLATFORM = 'amd'
 $env:HIP_DEVICE_LIB_PATH = Join-Path $RocmRoot 'lib\llvm\amdgcn\bitcode'
 $env:GGML_CUDA_ALLREDUCE = 'nccl'
 $env:WAC_MODE = $Mode
+$env:WAC_LLAMA_RCCL_EXPERIMENTAL = if ($EnableExperimentalLlamaRccl) { '1' } else { '0' }
 $env:PATH = "$PluginBin;$RocmBin;$RocmLlvmBin;$env:PATH"
+
+if ($Mode -eq 'rccl' -and -not $EnableExperimentalLlamaRccl) {
+    throw 'Mode rccl requires -EnableExperimentalLlamaRccl; it is not a validated llama.cpp transport.'
+}
 
 & $Executable @ExecutableArguments
 exit $LASTEXITCODE

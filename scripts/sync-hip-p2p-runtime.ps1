@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $Pins = Get-Content -Raw -LiteralPath (
-    Join-Path $ProjectRoot 'pins\nightly-2026-07-28.json'
+    Join-Path $ProjectRoot 'pins\rocm10-vllm-v0.28.0.json'
 ) | ConvertFrom-Json
 $Checkout = Join-Path $ProjectRoot 'sandbox\rocm-systems-hip-p2p'
 $ToolsEnvironment = Join-Path $ProjectRoot 'build\hip-p2p-tools'

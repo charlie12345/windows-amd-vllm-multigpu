@@ -4,9 +4,40 @@ Native-Windows AMD multi-GPU collectives for vLLM and llama.cpp/ROCmFPX using
 a port of RCCL plus a D3D12 cross-adapter AllReduce fast path. Both integrations
 remain external to the inference-engine source trees.
 
+> [!IMPORTANT]
+> The vLLM adapter is a plugin for
+> [`charlie12345/vLLM_for_AMD`](https://github.com/charlie12345/vLLM_for_AMD),
+> not a Windows port of vLLM by itself. Install or build that Windows AMD vLLM
+> fork first, then install this repository into the **same Python environment**
+> that launches vLLM. Stock upstream vLLM on native Windows is not a supported
+> host. The currently validated fork branch and commit are recorded in
+> [`pins/rocm10-vllm-v0.28.0.json`](pins/rocm10-vllm-v0.28.0.json).
+
+> [!CAUTION]
+> This private repository contains experimental development software and is
+> provided without warranty. Multi-GPU runtime or driver failures can hang
+> processes, strand WDDM VRAM allocations, disrupt the desktop, or require a
+> restart/cold power cycle. Save other work, validate with the small probes
+> first, and use at your own risk. The scripts reduce known failure modes but
+> cannot recover a wedged kernel driver or GPU firmware.
+
+This phase publishes source only. Users compile vLLM, RCCL, the D3D12/HIP
+transport, and the llama adapter locally; no Docker image or general-purpose
+prebuilt binary is part of this release candidate.
+
+The RC2 source, exact-host integration, and native compile/link gates pass, but
+a fresh TP=2 runtime qualification of the final vLLM v0.28/ROCm 10 commits is
+still pending because Windows currently reports the second reference R9700 as
+unhealthy after a power interruption. Performance and coherency results below
+are retained reference measurements from the configurations described beside
+them; they are not a new post-update benchmark claim. See
+[`release-notes-v0.2.0-rc2.md`](docs/release-notes-v0.2.0-rc2.md) for the exact
+release gate.
+
 The validated target is Windows 11 with two AMD Radeon AI PRO R9700
-(`gfx1201`) GPUs. Other AMD GPUs and software versions require their own
-validation.
+(`gfx1201`) GPUs. ROCm 10 packages and build scripts also expose RDNA 2/3/3.5/4
+targets, including RX 7900 XTX (`gfx1100`), but those configurations require
+their own validation.
 
 ## Choose the correct adapter
 
@@ -18,6 +49,12 @@ validation.
 These are not interchangeable binaries. The llama shim deliberately implements
 only the RCCL calls imported by the tested llama HIP backend. vLLM requires the
 full RCCL DLL and its existing communicator adapter.
+
+ROCm 10 Direct-RCCL is validated for vLLM's process-per-GPU design. For
+llama.cpp/ROCmFPX, the same-process `ncclCommInitAll` route remains experimental;
+the safe external-plugin configuration uses D3D12 AllReduce, builds with
+`GGML_CUDA_NO_PEER_COPY=ON`, and launches with
+`--split-mode tensor --no-mmap`. See the engine-specific guide before building.
 
 ## What works
 
@@ -38,8 +75,10 @@ The default hybrid uses the following division of work:
 | Bootstrap and capability agreement | PyTorch Gloo | CPU control plane only |
 | Unsupported cases | Pinned/mapped host transport | Correctness fallback |
 
-AllReduce tensors larger than the configured D3D12 heap automatically route
-to RCCL instead of failing; smaller supported tensors continue on D3D12.
+Supported AllReduce tensors inside the configured D3D12 payload range use the
+cross-adapter path. Tensors below the minimum or above the maximum route to
+RCCL instead of failing. The vLLM defaults are 32 KiB through 64 MiB because
+small decode reductions measured faster through Direct-RCCL on this stack.
 
 This is true tensor parallelism, but it is not direct VRAM-to-VRAM P2P. The
 current Windows HIP driver reports no peer access and rejects cross-device HIP
@@ -118,12 +157,18 @@ prebuilt Windows PAL/WKMI objects have separate binary terms. See `NOTICE` and
 For every supported two-rank AllReduce, each worker enqueues this sequence on
 the current PyTorch HIP stream:
 
-1. copy its local tensor shard from VRAM into its own D3D12 cross-adapter heap;
+1. launch a HIP byte-copy kernel from local VRAM into its own D3D12
+   cross-adapter heap;
 2. signal a D3D12 timeline fence from the GPU stream;
 3. wait on the peer GPU's fence without a CPU payload copy;
-4. copy the peer's cross-adapter heap into temporary local VRAM;
-5. launch a local HIP kernel that sums the local and peer tensors; and
-6. signal consumption so neither rank reuses its heap too early.
+4. launch a fused HIP kernel that reads the peer heap and sums it with the
+   local tensor into local VRAM; and
+5. signal consumption so neither rank reuses its heap too early.
+
+The custom publish kernel is intentional. ROCm 10 rejected or faulted when
+`hipMemcpyAsync` tried to classify the imported D3D12 pointer, including the
+235,520-byte speculative-decode collective. The kernel path avoids that
+pointer-classification failure and has an exact-size regression test.
 
 The copy engines and reduction kernels do the payload work. Gloo exchanges
 object names and RCCL unique IDs, but never receives a HIP tensor. RCCL handles
@@ -176,6 +221,8 @@ measurements, not general performance guarantees.
 Install these before cloning:
 
 - Windows 11 x64;
+- the Windows AMD vLLM fork when using the vLLM adapter; this bridge supplies
+  multi-GPU transports but does not supply vLLM's native-Windows ROCm port;
 - two supported AMD GPUs and an AMD driver compatible with the pinned ROCm
   wheel train;
 - PowerShell 5.1 or newer;
@@ -185,10 +232,14 @@ Install these before cloning:
   and a Windows SDK; and
 - Vulkan SDK 1.4.350.0 for the included Vulkan capability probe.
 
-The scripts currently target `gfx1201` and use the standard Visual Studio and
-Vulkan locations shown in [scripts/build-native.cmd](scripts/build-native.cmd)
-and [scripts/configure-rccl-windows.ps1](scripts/configure-rccl-windows.ps1).
-Change those pins deliberately for another GPU or toolchain.
+The scripts default to the validated `gfx1201` target and accept `gfx1030`,
+`gfx1100`-`gfx1103`, `gfx1150`-`gfx1153`, and `gfx1200`-`gfx1201`. RX 7900 XTX
+is RDNA 3 / `gfx1100`; RDNA 3.5 parts use `gfx115x`. Pass the same target to
+the ROCm bootstrap, native build, RCCL configure, vLLM build, and llama shim.
+Only dual-R9700 `gfx1201` has end-to-end validation, so every other target is
+build-selectable but unvalidated. The standard Visual Studio and Vulkan paths
+are shown in [scripts/build-native.cmd](scripts/build-native.cmd) and
+[scripts/configure-rccl-windows.ps1](scripts/configure-rccl-windows.ps1).
 
 Recommended firmware settings are Above-4G decoding enabled, Re-Size BAR
 enabled, and CSM disabled. They do not force HIP P2P support; the capability
@@ -202,8 +253,9 @@ Open PowerShell:
 git clone https://github.com/charlie12345/windows-amd-vllm-multigpu.git
 Set-Location .\windows-amd-vllm-multigpu
 
-# 1. Create the isolated ROCm/PyTorch build environment.
-.\scripts\bootstrap-nightly.ps1
+# 1. Create the isolated pinned ROCm 10/PyTorch build environment.
+# The historical script name remains for automation compatibility.
+.\scripts\bootstrap-nightly.ps1 -GpuArch gfx1201
 
 # 2. Build the mapped-memory and D3D12/HIP native components.
 .\scripts\build-native.cmd
@@ -213,7 +265,7 @@ Set-Location .\windows-amd-vllm-multigpu
 .\scripts\apply-rccl-patches.ps1
 
 # 4. Configure and build the RCCL functions used by vLLM.
-.\scripts\configure-rccl-windows.ps1 -FunctionProfile Vllm
+.\scripts\configure-rccl-windows.ps1 -FunctionProfile Vllm -GpuArch gfx1201
 .\scripts\build-rccl-windows.ps1 -Jobs 8
 
 # 5. Validate native RCCL and D3D12.
@@ -222,8 +274,17 @@ Set-Location .\windows-amd-vllm-multigpu
 .\.venv\Scripts\python.exe .\probes\d3d12_all_reduce_probe.py
 
 # 6. Create the isolated vLLM environment and build the pinned Windows fork.
-.\scripts\bootstrap-vllm.ps1 -MaxJobs 16
+.\scripts\bootstrap-vllm.ps1 -GpuArch gfx1201 -MaxJobs 8
 ```
+
+`bootstrap-vllm.ps1` clones the pinned `charlie12345/vLLM_for_AMD` revision,
+builds it, and installs this repository as a vLLM platform plugin in the same
+`.venv-vllm` environment. If the Windows AMD vLLM build already exists, follow
+the existing-environment procedure in the
+[Windows vLLM guide](docs/install-vllm-windows.md) instead. Installing the
+plugin into a different Python environment will not affect the vLLM process.
+The bootstrap verifies a clean exact host commit and applies no patches or
+source overlays to vLLM.
 
 The RCCL output is `build\rccl-windows\rccl.dll`. The D3D12 transport is
 `build\native\wavmg_d3d12_v1.dll`. Both are local build products and are
@@ -239,6 +300,12 @@ Hugging Face cache.
 
 ## Run vLLM with TP2
 
+The launcher first runs a read-only Device Manager health gate. If either
+adapter is missing or reports anything other than `OK` (including
+`CM_PROB_FAILED_ADD`), it exits before loading HIP or model weights. Do not
+bypass that gate; restart Windows, then cold-power-cycle or repair the driver
+if the error remains.
+
 The launch script defaults to D3D12 AllReduce plus RCCL:
 
 ```powershell
@@ -251,7 +318,9 @@ The launch script defaults to D3D12 AllReduce plus RCCL:
 
 Use `-UseD3D12 $false` for RCCL-only. Disable both flags for the mapped-host
 fallback. The adapter currently accepts TP1 or TP2 and rejects pipeline, data,
-decode-context, prefill-context, and expert-parallel layouts.
+decode-context, and prefill-context layouts. TP=2 expert sharding that does not
+require All-to-All is available behind the experimental
+`WAVMG_ALLOW_TP_EXPERT_PARALLEL=1` gate. All-to-All remains unsupported.
 
 Set `WAVMG_TRACE_COLLECTIVES=1` to print one routing marker per operation and
 backend on each rank. It is enabled by the large-model validation script.
@@ -263,7 +332,7 @@ The pinned Windows vLLM build now includes upstream support for
 (`BailingMoeV3ForCausalLM`), including its hybrid KDA/MLA attention, MoE model,
 MTP model class, Ling reasoning/tool parsers, FP8 handling, and routed-expert
 MXFP4 support. The source commits and all three checkpoint revisions are pinned
-in `pins/nightly-2026-07-28.json`.
+in `pins/rocm10-vllm-v0.28.0.json`.
 
 The official native vLLM-format checkpoints are:
 
@@ -327,7 +396,8 @@ tied, while D3D12 AllReduce overhead makes the hybrid slower. TP2 still reduces
 model memory to about 8.84 GiB per GPU and provides much more KV-cache capacity.
 Run `scripts\benchmark-ling3.ps1` to reproduce all three cases. O1 required a
 local fix so dynamic compile ranges remain selectable when concrete
-`compile_sizes` is unset; that fix is part of the version-locked patch stack.
+`compile_sizes` is unset. That fix now lives in the pinned Windows vLLM host
+fork rather than a plugin-applied patch.
 
 ### Ling concurrent-serving benchmark
 
@@ -663,8 +733,10 @@ Reproduce the server and matrix with:
 The AWQ checkpoint does not include its own `mtp.*` tensors. The experimental
 `scripts\prepare-qwen38-27b-awq-mtp.py` builder can reproduce a standalone
 BF16 MTP head from the pinned official Qwen checkpoint while keeping the INT4
-target unchanged. Local vLLM patches recognize Qwen's text-config aliases and
-keep that draft head unquantized. The head now loads completely and shares the
+target unchanged. Upstream vLLM v0.28 and the pinned Windows host recognize
+Qwen's text-config aliases and keep that draft head unquantized; this plugin
+applies no model-code patch. The
+head now loads completely and shares the
 target embedding/LM head, but its first Windows ROCm profile currently fails
 in the M-RoPE path because query/key and 3-D positions disagree. Current
 upstream [Qwen3.5 guidance](https://github.com/vllm-project/recipes/blob/main/Qwen/Qwen3.5.md)
@@ -682,7 +754,8 @@ downloaded and validated with:
 .\.venv-vllm\Scripts\python.exe .\scripts\download-qwen38-27b-dflash2.py
 ```
 
-The pinned vLLM patch adds upstream DFlash2 support and its initialization fix.
+Upstream vLLM v0.28 includes DFlash2 support and its initialization fix; the
+pinned Windows host carries that upstream implementation unchanged.
 On ROCm, the target and drafter must use matching attention backends; an
 automatic `ROCM_ATTN` target plus `TRITON_ATTN` drafter creates incompatible
 shared KV-cache layouts. The benchmark launcher now matches both to
@@ -768,18 +841,21 @@ To isolate collective performance from model compute:
 ## Reproducibility and safety limits
 
 Exact PyTorch, ROCm, RCCL, HIPIFY, vLLM, and large-model revisions are recorded
-in [pins/nightly-2026-07-28.json](pins/nightly-2026-07-28.json). The RCCL and
-vLLM patch scripts verify both the upstream commit and patch applicability
-before modifying ignored sandbox clones.
+in [pins/rocm10-vllm-v0.28.0.json](pins/rocm10-vllm-v0.28.0.json). RCCL remains
+a version-locked derived-source build. vLLM is different: the verifier requires
+the exact clean host commit and applies no source patch. The historical
+`pins/nightly-2026-07-28.json` and `patches/vllm` files remain only as v0.27
+development provenance.
 
-The Windows vLLM patch set also adds cooperative EngineCore shutdown. Python's
+The pinned Windows vLLM host includes cooperative EngineCore shutdown. Python's
 `multiprocessing.Process.terminate()` maps to `TerminateProcess` on Windows and
-does not run Python's SIGTERM handlers; without the patch, repeatedly launching
+does not run Python's SIGTERM handlers; without this host fix, repeatedly launching
 `vllm bench latency` can orphan TP workers and leave their HIP contexts charged
-to WDDM even after the PIDs disappear. The patch sends a spawn-safe shutdown
+to WDDM even after the PIDs disappear. The host sends a spawn-safe shutdown
 event first, lets EngineCore release workers and GPU resources normally, and
-retains forced termination only as a timeout fallback. Validate the primitive
-with:
+retains forced termination only as a timeout fallback. The launch scripts also
+refuse to start when Windows reports an unhealthy adapter. Validate the
+primitive with:
 
 ```powershell
 .\.venv-vllm\Scripts\python.exe .\probes\probe_windows_engine_shutdown.py
@@ -809,15 +885,17 @@ interpret a successful ReBAR setup as GPU-direct support.
 - `src/`: RCCL wrapper, D3D12 transport, fallbacks, and vLLM plugin.
 - `probes/`: exact-value, stream-ordering, model, and performance tests.
 - `scripts/`: pinned bootstrap, native build, validation, and launch commands.
-- `patches/`: version-locked vLLM and RCCL source patches.
+- `patches/`: the active version-locked RCCL patch plus archival v0.27 vLLM
+  development patches; current vLLM integration applies none.
 - `cmake/` and `tools/`: Windows ROCm build integration.
 - `pins/`: the exact validated dependency and model revisions.
 - `LICENSES/`: verbatim upstream licenses/notices plus derived-code notices.
 
 Full results and upstream constraints are in
 [docs/results.md](docs/results.md) and
-[docs/upstream-status.md](docs/upstream-status.md). The source/binary release
-procedure and safety gates are in [docs/publishing.md](docs/publishing.md).
+[docs/upstream-status.md](docs/upstream-status.md). The source-publishing
+procedure and future binary safety gates are in
+[docs/publishing.md](docs/publishing.md).
 
 ## Licensing and attribution
 

@@ -15,9 +15,12 @@ $VllmExecutable = Join-Path $ProjectRoot ".venv-vllm\Scripts\vllm.exe"
 if (-not (Test-Path $VllmExecutable)) {
     throw "Missing .venv-vllm. Run scripts\bootstrap-vllm.ps1 first."
 }
+& (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') `
+    -RequiredCount $TensorParallelSize
 
-$env:HIP_VISIBLE_DEVICES = "0,1"
-$env:CUDA_VISIBLE_DEVICES = "0,1"
+$VisibleDevices = if ($TensorParallelSize -eq 2) { '0,1' } else { '0' }
+$env:HIP_VISIBLE_DEVICES = $VisibleDevices
+$env:CUDA_VISIBLE_DEVICES = $VisibleDevices
 $env:VLLM_WORKER_MULTIPROC_METHOD = "spawn"
 $env:VLLM_USE_V2_MODEL_RUNNER = "0"
 $env:VLLM_DISTRIBUTED_USE_SPLIT_GROUP = "0"
@@ -26,6 +29,9 @@ $env:WAVMG_USE_RCCL = if ($UseRccl -and $TensorParallelSize -eq 2) { "1" } else 
 $env:WAVMG_RCCL_DLL = Join-Path $ProjectRoot "build\rccl-windows\rccl.dll"
 $env:WAVMG_USE_D3D12 = if ($UseD3D12 -and $TensorParallelSize -eq 2) { "1" } else { "0" }
 $env:WAVMG_D3D12_DLL = Join-Path $ProjectRoot "build\native\wavmg_d3d12_v1.dll"
+$env:WAVMG_HIP_DLL = Join-Path $ProjectRoot "build\native\wavmg_hip_v1.dll"
+$env:WAVMG_D3D12_MIN_BYTES = "32768"
+$env:WAVMG_D3D12_MAX_BYTES = "67108864"
 $env:VLLM_PLUGINS = "windows_amd_multigpu"
 $env:HF_HUB_OFFLINE = "1"
 

@@ -10,7 +10,8 @@ distribution checklist, not legal advice.
 | --- | --- | --- | --- |
 | Original Python, C++, HIP, PowerShell, CMake, probes, and documentation | Carlo Pasquale (`@charlie12345`) and Windows AMD vLLM Multi-GPU contributors | Apache License 2.0 | `LICENSE`, `NOTICE` |
 | llama.cpp/ROCmFPX RCCL ABI shim and in-process D3D12 adapter | Carlo Pasquale (`@charlie12345`) and contributors | Apache License 2.0 | `adapters/llama-rccl-shim/`, `LICENSE`, `NOTICE` |
-| vLLM compatibility patch | `charlie12345/vLLM_for_AMD` at `fb9fb8c5aeaed96c91eef5cb48743a96f8496907`, derived from vLLM | Apache License 2.0 and the pinned fork's NOTICE | `patches/vllm/`, `LICENSES/VLLM-UPSTREAM-LICENSE.txt`, `LICENSES/VLLM-UPSTREAM-NOTICE.txt` |
+| Current Windows AMD vLLM host | `charlie12345/vLLM_for_AMD` at the exact commit in `pins/rocm10-vllm-v0.28.0.json`, derived from vLLM v0.28 | Apache License 2.0 and the pinned fork's NOTICE | Fetched and built separately; no vLLM source is bundled or patched by this plugin |
+| Legacy v0.27 vLLM development patches | `charlie12345/vLLM_for_AMD` at `fb9fb8c5aeaed96c91eef5cb48743a96f8496907`, derived from vLLM | Apache License 2.0 and the historical fork NOTICE | `patches/vllm/` retained for provenance; not applied by the current installer |
 | Native Windows RCCL patch and a resulting `rccl.dll` | ROCm `rocm-systems/projects/rccl` at `ee3bae9a931561506c49dcf82fca52ec4711c34f`, derived in part from NVIDIA NCCL | Upstream BSD-3-Clause terms plus retained third-party terms | `patches/rccl/`, `LICENSES/RCCL-UPSTREAM-LICENSE.txt`, `LICENSES/RCCL-UPSTREAM-NOTICES.txt`, `LICENSES/RCCL-UPSTREAM-ThirdPartyNotices.txt` |
 | RCCL files added by this Windows port | Windows AMD vLLM Multi-GPU contributors, added inside the RCCL-derived tree | BSD-3-Clause, matching the surrounding RCCL project; each added source carries an SPDX identifier | Included inside the version-pinned RCCL patch |
 | HIPIFY | ROCm HIPIFY at `f1af27c6e0c43e1a9663dc3650dcff54f980e6a6` | Its upstream license | Fetched into ignored `sandbox/hipify`; no HIPIFY source is redistributed |
@@ -33,21 +34,22 @@ When the summary and upstream text differ, the upstream text controls.
 
 ## Patch attribution and modification notice
 
-The RCCL and vLLM patch filenames contain abbreviated base commits, and the
-complete commits are recorded in `pins/nightly-2026-07-28.json`. The patches
-are clearly identified as Windows modifications rather than unmodified
-upstream releases. New RCCL-tree files carry `SPDX-License-Identifier:
-BSD-3-Clause` and a Windows AMD vLLM Multi-GPU contributor notice. Existing
-upstream copyright and SPDX headers are retained in patch context and source.
+The RCCL patch filename contains an abbreviated base commit, and the current
+complete source pins are recorded in `pins/rocm10-vllm-v0.28.0.json`. Legacy
+vLLM patch filenames and their old base are recorded in
+`pins/nightly-2026-07-28.json`. Those files are clearly marked archival and are
+not applied by the current installer. New RCCL-tree files carry
+`SPDX-License-Identifier: BSD-3-Clause` and a Windows AMD vLLM Multi-GPU
+contributor notice. Existing upstream copyright and SPDX headers are retained
+in patch context and source.
 
-The vLLM patches change only the files named by their diffs. The Ling model
-support patch records the exact InclusionAI/upstream commits from which it was
-ported. The Windows ROCm Triton MLA fallback is original Carlo Pasquale project
-work under Apache-2.0 and carries its SPDX/copyright notice in the added source.
-The compile-range dispatcher correction and regression test are also original
-Carlo Pasquale project changes under Apache-2.0.
-The repository NOTICE, adjacent version-locked patches, and pinned fork NOTICE
-identify the modified distribution and upstream sources.
+The archival vLLM patches change only the files named by their diffs. The Ling
+model-support patch records the exact InclusionAI/upstream commits from which it
+was ported. The Windows ROCm Triton MLA fallback and compile-range dispatcher
+correction are now maintained in the separately built Windows AMD vLLM host.
+Their original project contributions remain Apache-2.0. The repository NOTICE,
+adjacent version-locked patches, and pinned fork NOTICE identify the modified
+distribution and upstream sources.
 
 ## Source-distribution checklist
 
@@ -55,11 +57,12 @@ A source archive must contain:
 
 1. the top-level `LICENSE` and `NOTICE`;
 2. the complete `LICENSES` directory;
-3. the exact `pins/nightly-2026-07-28.json` file; and
-4. both version-pinned patch directories; and
+3. both exact pin manifests under `pins/`;
+4. both version-pinned patch directories, with `patches/vllm` identified as
+   archival; and
 5. the complete `adapters/llama-rccl-shim` source directory.
 
-`MANIFEST.in` includes all four categories. The package build is checked so
+`MANIFEST.in` includes all listed categories. The package build is checked so
 Python bytecode, upstream sandboxes, model weights, compiled objects, and local
 logs are not included.
 

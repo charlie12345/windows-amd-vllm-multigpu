@@ -54,11 +54,14 @@ $ModelPath = $ModelLine.Substring('WAVMG_MODEL_PATH='.Length)
 
 $RcclDll = Join-Path $ProjectRoot 'build\rccl-windows\rccl.dll'
 $D3D12Dll = Join-Path $ProjectRoot 'build\native\wavmg_d3d12_v1.dll'
-foreach ($Required in ($RcclDll, $D3D12Dll)) {
+$HipDll = Join-Path $ProjectRoot 'build\native\wavmg_hip_v1.dll'
+foreach ($Required in ($RcclDll, $D3D12Dll, $HipDll)) {
     if (-not (Test-Path -LiteralPath $Required)) {
         throw "Missing native transport: $Required"
     }
 }
+
+& (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') -RequiredCount 2
 
 $env:HIP_VISIBLE_DEVICES = '0,1'
 $env:CUDA_VISIBLE_DEVICES = '0,1'
@@ -71,6 +74,7 @@ $env:WAVMG_ENABLE = '1'
 $env:WAVMG_USE_RCCL = '1'
 $env:WAVMG_RCCL_DLL = $RcclDll
 $env:WAVMG_D3D12_DLL = $D3D12Dll
+$env:WAVMG_HIP_DLL = $HipDll
 $env:WAVMG_TRACE_COLLECTIVES = '1'
 $env:HF_HUB_OFFLINE = '1'
 $env:NCCL_DEBUG = 'WARN'

@@ -2,37 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PAIRS = (
-    (
-        "RCCL license",
-        PROJECT_ROOT / "sandbox/rocm-systems/projects/rccl/LICENSE.txt",
-        PROJECT_ROOT / "LICENSES/RCCL-UPSTREAM-LICENSE.txt",
-    ),
-    (
-        "RCCL notices",
-        PROJECT_ROOT / "sandbox/rocm-systems/projects/rccl/NOTICES.txt",
-        PROJECT_ROOT / "LICENSES/RCCL-UPSTREAM-NOTICES.txt",
-    ),
-    (
-        "RCCL third-party notices",
-        PROJECT_ROOT / "sandbox/rocm-systems/projects/rccl/ThirdPartyNotices.txt",
-        PROJECT_ROOT / "LICENSES/RCCL-UPSTREAM-ThirdPartyNotices.txt",
-    ),
-    (
-        "vLLM license",
-        PROJECT_ROOT / "sandbox/vllm/LICENSE",
-        PROJECT_ROOT / "LICENSES/VLLM-UPSTREAM-LICENSE.txt",
-    ),
-    (
-        "vLLM notice",
-        PROJECT_ROOT / "sandbox/vllm/NOTICE",
-        PROJECT_ROOT / "LICENSES/VLLM-UPSTREAM-NOTICE.txt",
-    ),
-)
 
 
 def normalized(path: Path) -> str:
@@ -40,7 +14,43 @@ def normalized(path: Path) -> str:
 
 
 def main() -> int:
-    for label, upstream, packaged in PAIRS:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--vllm-root",
+        type=Path,
+        default=PROJECT_ROOT / "sandbox/vllm",
+        help="exact clean Windows AMD vLLM host checkout",
+    )
+    args = parser.parse_args()
+    vllm_root = args.vllm_root.expanduser().resolve()
+    pairs = (
+        (
+            "RCCL license",
+            PROJECT_ROOT / "sandbox/rocm-systems/projects/rccl/LICENSE.txt",
+            PROJECT_ROOT / "LICENSES/RCCL-UPSTREAM-LICENSE.txt",
+        ),
+        (
+            "RCCL notices",
+            PROJECT_ROOT / "sandbox/rocm-systems/projects/rccl/NOTICES.txt",
+            PROJECT_ROOT / "LICENSES/RCCL-UPSTREAM-NOTICES.txt",
+        ),
+        (
+            "RCCL third-party notices",
+            PROJECT_ROOT / "sandbox/rocm-systems/projects/rccl/ThirdPartyNotices.txt",
+            PROJECT_ROOT / "LICENSES/RCCL-UPSTREAM-ThirdPartyNotices.txt",
+        ),
+        (
+            "vLLM license",
+            vllm_root / "LICENSE",
+            PROJECT_ROOT / "LICENSES/VLLM-UPSTREAM-LICENSE.txt",
+        ),
+        (
+            "vLLM notice",
+            vllm_root / "NOTICE",
+            PROJECT_ROOT / "LICENSES/VLLM-UPSTREAM-NOTICE.txt",
+        ),
+    )
+    for label, upstream, packaged in pairs:
         if not upstream.is_file():
             raise FileNotFoundError(
                 f"Missing pinned upstream file for {label}: {upstream}"

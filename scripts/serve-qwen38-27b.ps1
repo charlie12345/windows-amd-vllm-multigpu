@@ -31,6 +31,10 @@ foreach ($Required in ($Vllm, $ModelPath)) {
 }
 
 $TensorParallelSize = if ($Mode -eq 'Rccl') { 2 } else { 1 }
+if ($TensorParallelSize -eq 2) {
+    & (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') `
+        -RequiredCount 2
+}
 if ($TensorParallelSize -eq 2 -and -not (Test-Path -LiteralPath $RcclDll)) {
     throw "Missing RCCL transport: $RcclDll"
 }

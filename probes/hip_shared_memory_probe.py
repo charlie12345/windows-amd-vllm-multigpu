@@ -8,17 +8,18 @@ import multiprocessing as mp
 from multiprocessing import shared_memory
 from queue import Empty
 
+from windows_amd_vllm_multigpu.hip_runtime import (
+    HIP_HOST_REGISTER_MAPPED,
+    HIP_MEMCPY_DEFAULT,
+    HIP_MEMCPY_DEVICE_TO_HOST,
+    HIP_MEMCPY_HOST_TO_DEVICE,
+    HipRuntime,
+)
+
 
 WORLD_SIZE = 2
 SIZE_BYTES = 1024 * 1024
 TIMEOUT_SECONDS = 45
-from windows_amd_vllm_multigpu.hip_runtime import (
-    HIP_MEMCPY_DEVICE_TO_HOST,
-    HIP_MEMCPY_DEFAULT,
-    HIP_MEMCPY_HOST_TO_DEVICE,
-    HIP_HOST_REGISTER_MAPPED,
-    HipRuntime,
-)
 
 
 def _rank_main(

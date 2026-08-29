@@ -1,67 +1,67 @@
-# Private publishing and release checklist
+# Private source-publishing checklist
 
-The GitHub repository is private and must remain private. Releases and their
-assets are uploaded only to that private repository and are available only to
-authorized GitHub users. Do not run a visibility-change command as part of the
-build or release workflow.
+The multi-GPU plugin repository is private and must remain private. Source is
+pushed only to that repository and is available only to authorized GitHub
+users. Do not run a visibility-change command as part of the build or publishing
+workflow.
 
-## Repository structure
+## Two-repository boundary
 
-Publish one source repository with two explicit adapters:
+The inference engine and multi-GPU transport are intentionally separate:
+
+- `charlie12345/vLLM_for_AMD` is the public Windows AMD vLLM host; and
+- `charlie12345/windows-amd-vllm-multigpu` is this private plugin repository.
+
+This private repository has two engine-specific adapters:
 
 - `src/windows_amd_vllm_multigpu`: multi-process vLLM platform plugin;
 - `adapters/llama-rccl-shim`: single-process llama/ROCmFPX RCCL ABI shim.
 
 Do not market the llama DLL as a universal RCCL replacement. Do not put the
-shim in the vLLM RCCL path.
+shim in the vLLM RCCL path. Do not copy this repository's Python source into
+the vLLM checkout. Install the Python package into the same virtual environment
+as the exact pinned vLLM host instead.
 
-## Recommended release assets
+## Current publication scope
 
-Use separate, versioned assets because their ABI and runtime matrices differ:
+Publish source only. Users compile the Windows AMD vLLM host, Windows RCCL,
+native D3D12/HIP transport, and llama adapter themselves. This phase does not
+publish Docker images, wheels containing native DLLs, ZIP binaries, or GitHub
+Release assets.
 
-- `wavmg-vllm-<version>-rocm<version>-gfx1201.zip`;
-- `wavmg-llama-shim-<version>-rocm<version>-gfx1201.zip`;
-- `SHA256SUMS.txt` and a provenance JSON for each binary archive.
-
-GitHub automatically supplies source archives. Do not commit DLLs, model
-weights, ROCm wheels, AMD drivers, Visual Studio files, or downloaded upstream
-source trees to Git.
-
-Each binary ZIP must include the top-level `LICENSE`, `NOTICE`, the complete
-`LICENSES` directory, and a manifest recording:
-
-- this repository's Git commit;
-- ROCm distribution/version and GPU target;
-- RCCL repository commit, RCCL version, and patch SHA-256;
-- every shipped DLL's SHA-256;
-- the tested GPU, driver, Windows build, and test result.
-
-The RCCL binary remains under upstream RCCL/NCCL terms; the surrounding shim,
-D3D12 adapter, Python integration, and scripts are Apache-2.0. See
-[`licensing.md`](licensing.md). This is an engineering checklist, not legal
+Do not commit DLLs, model weights, ROCm wheels, AMD drivers, Visual Studio
+files, build output, or downloaded upstream source trees to Git. Keep exact
+source and dependency revisions in `pins/`. See
+[`licensing.md`](licensing.md); it is an engineering checklist, not legal
 advice.
 
-## Gate before a private binary release
+## Source PR gate
 
-1. Build from a fresh clone at the intended tag.
-2. Run the RCCL ABI probe and exact-value native validation.
-3. Run D3D12 exact-value tests for FP16, FP32, and BF16.
-4. Run vLLM TP2 RCCL-only, then hybrid, and compare deterministic token IDs.
-5. Run llama TP2 in `rccl`, `d3d12`, and `hybrid` modes and compare output to
-   a one-GPU reference.
-6. Stress repeated startup/shutdown and at least one long generation.
-7. Confirm no DLL is loaded from an unintended directory with Process Explorer
-   or loader diagnostics.
-8. Generate the release archives and independently verify their hashes.
+1. Verify `gh auth status` reports `charlie12345` as the active account.
+2. Verify the destination repository reports `"isPrivate": true` before push.
+3. Review the complete diff and run `git diff --check`.
+4. Validate both pin manifests and parse every changed PowerShell script.
+5. Verify the exact clean vLLM host with `scripts/verify-vllm-host.ps1` and
+   confirm the plugin applies zero vLLM patches.
+6. Run Ruff's fatal-error/undefined-name rules and formatter check on changed
+   Python, bytecode compilation, package-content checks, and available
+   compile/link tests. Ensure the source artifact contains no DLLs, models,
+   credentials, logs, or build output.
+7. Run GPU probes only when Windows reports every required adapter healthy.
+   Record any missing runtime validation in the PR; never bypass the health
+   gate to turn an unhealthy adapter into a benchmark claim.
+8. Push a feature branch, open a PR against `main`, inspect its checks and
+   complete diff, and merge only after the source gate passes.
+9. Verify the repository is still private and `charlie12345` is still active.
 
-If GPU runtime validation has not happened, publish source or a GitHub
-prerelease only. Label compile/link-only artifacts accordingly. The packaging
-script refuses dirty and runtime-unvalidated provenance by default;
-`-AllowUnvalidated` is only for an explicitly labeled prerelease.
+The current second R9700 health failure prevents a new ROCm 10 TP=2 runtime
+revalidation. It does not prevent a clearly labeled source-only PR whose static,
+host-integration, and compile checks pass. It does prevent a stable binary or
+runtime-performance claim for this exact post-update stack.
 
 ## Maintainer commands
 
-After reviewing and committing the release branch:
+After reviewing and committing the source branch:
 
 ```powershell
 gh auth switch --user charlie12345
@@ -69,15 +69,19 @@ gh repo view charlie12345/windows-amd-vllm-multigpu `
     --json nameWithOwner,isPrivate,url
 # Stop unless isPrivate is true.
 
-git push origin main
+git push private-github feature/private-v0.2.0-rc2
 
-git tag -a v0.2.0-rc1 -m 'Windows AMD multi-GPU bridge v0.2.0-rc1'
-git push origin v0.2.0-rc1
-gh release create v0.2.0-rc1 .\dist\*.zip .\dist\SHA256SUMS.txt `
-    --prerelease `
-    --verify-tag `
-    --title 'Windows AMD multi-GPU bridge v0.2.0-rc1' `
-    --notes-file .\docs\release-notes-v0.2.0-rc1.md
+gh pr create `
+    --repo charlie12345/windows-amd-vllm-multigpu `
+    --base main `
+    --head feature/private-v0.2.0-rc2 `
+    --title 'ROCm 10 and clean vLLM v0.28 plugin integration' `
+    --body-file .\docs\release-notes-v0.2.0-rc2.md
+
+gh pr checks --repo charlie12345/windows-amd-vllm-multigpu <PR-NUMBER>
+# Review the Files changed tab and merge only after every source gate passes.
+gh pr merge --repo charlie12345/windows-amd-vllm-multigpu `
+    <PR-NUMBER> --merge --delete-branch=false
 
 gh repo view charlie12345/windows-amd-vllm-multigpu `
     --json nameWithOwner,isPrivate,url
@@ -86,3 +90,12 @@ gh repo view charlie12345/windows-amd-vllm-multigpu `
 
 Never paste tokens into scripts or release notes. Use the GitHub CLI credential
 store and verify the active account with `gh auth status` first.
+
+## Future binary releases
+
+Binary distribution is out of scope for this phase. Before enabling it, restore
+a separate binary-release gate that requires fresh-clone builds, exact-value
+RCCL and D3D12 tests, deterministic vLLM and llama TP=2 parity, repeated clean
+shutdown, loader-path verification, per-file hashes, full license bundles, and
+an exact build manifest. Do not infer binary redistribution permission merely
+from the source licenses.

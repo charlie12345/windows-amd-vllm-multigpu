@@ -108,7 +108,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $Commit = (& git -C $ProjectRoot rev-parse HEAD).Trim()
-$Pins = Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot 'pins\nightly-2026-07-28.json') |
+$Pins = Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot 'pins\rocm10-vllm-v0.28.0.json') |
     ConvertFrom-Json
 $RcclPatch = Join-Path $ProjectRoot 'patches\rccl\ee3bae9-windows-native.patch'
 $RcclBuildCache = Join-Path (Split-Path -Parent $RcclDll) 'CMakeCache.txt'
@@ -144,7 +144,7 @@ foreach ($SourceFile in @(
 $Provenance = [ordered]@{
     schema = 1
     component = 'wavmg-llama-rccl-shim'
-    component_version = '0.2.0-rc1'
+    component_version = '0.2.0-rc2'
     repository_commit = $Commit
     repository_dirty = $RepositoryDirty
     shim_build_rocm_version = $RocmVersion

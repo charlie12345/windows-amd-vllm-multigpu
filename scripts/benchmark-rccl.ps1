@@ -24,6 +24,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot 'build\rccl-windows\rcc
     throw 'Build native Windows RCCL first.'
 }
 
+& (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') -RequiredCount 2
+
 $env:NCCL_DEBUG = 'WARN'
 $env:NCCL_RAS_ENABLE = '0'
 $env:NCCL_SHM_DISABLE = '1'

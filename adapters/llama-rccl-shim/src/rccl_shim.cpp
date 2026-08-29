@@ -155,14 +155,25 @@ std::size_t configured_size(const char * name, std::size_t fallback) {
     return static_cast<std::size_t>(parsed);
 }
 
+bool configured_switch(const char * name, bool fallback) {
+    const char * value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return fallback;
+    }
+    const std::string normalized = lowercase(value);
+    return normalized == "1" || normalized == "true" || normalized == "on" ||
+           normalized == "yes";
+}
+
 struct clique_context {
     std::vector<int> devices;
     wac_d3d12_transport_ptr d3d12;
     transport_mode mode = transport_mode::hybrid;
     rccl_dispatch_mode rccl_dispatch = rccl_dispatch_mode::threaded;
+    bool rccl_experimental = false;
     std::size_t d3d12_buffer_bytes = 64ULL * 1024 * 1024;
     std::size_t d3d12_route_min_bytes = 0;
-    std::size_t d3d12_route_max_bytes = 32ULL * 1024 - 1;
+    std::size_t d3d12_route_max_bytes = 64ULL * 1024 * 1024;
     std::atomic<bool> logged_d3d12{false};
     std::atomic<bool> logged_rccl{false};
 };
@@ -268,7 +279,6 @@ ncclResult_t dispatch_real_threaded(const std::array<pending_allreduce, 2> & cal
     if (calls[0].comm->real_comm == nullptr || calls[1].comm->real_comm == nullptr) {
         return ncclInvalidUsage;
     }
-
     std::array<ncclResult_t, 2> results = {ncclSuccess, ncclSuccess};
     std::mutex mutex;
     std::condition_variable condition;
@@ -288,7 +298,13 @@ ncclResult_t dispatch_real_threaded(const std::array<pending_allreduce, 2> & cal
                     condition.wait(lock, [&]() { return go; });
                 }
             }
-            (void)hipSetDevice(calls[rank].comm->clique->devices[calls[rank].comm->rank]);
+            const hipError_t set_device_result =
+                    hipSetDevice(calls[rank].comm->clique->devices[calls[rank].comm->rank]);
+            if (set_device_result != hipSuccess) {
+                results[rank] = ncclUnhandledCudaError;
+                return;
+            }
+
             results[rank] = real.all_reduce(calls[rank].send, calls[rank].recv, calls[rank].count,
                                             calls[rank].datatype, calls[rank].op,
                                             calls[rank].comm->real_comm, calls[rank].stream);
@@ -354,9 +370,15 @@ ncclResult_t dispatch_group() {
         return ncclSuccess;
     }
 
+    if (calls[0].comm->real_comm == nullptr || calls[1].comm->real_comm == nullptr) {
+        g_last_error =
+                "Direct-RCCL is disabled for llama.cpp's same-process ncclCommInitAll path; "
+                "increase WAC_D3D12_BUFFER_BYTES or set WAC_LLAMA_RCCL_EXPERIMENTAL=1";
+        return ncclInvalidUsage;
+    }
     if (!clique->logged_rccl.exchange(true)) {
         std::fprintf(stderr,
-                     "wavmg-llama-rccl-shim: route=Direct-RCCL payload=%zu bytes dispatch=%s\n",
+                     "wavmg-llama-rccl-shim: route=Direct-RCCL payload=%zu bytes dispatch=%s experimental=yes\n",
                      bytes,
                      clique->rccl_dispatch == rccl_dispatch_mode::threaded ? "threaded"
                                                                            : "native-group");
@@ -386,22 +408,27 @@ WAC_EXPORT ncclResult_t ncclCommInitAll(ncclComm_t * comms, int ndev, const int 
     clique->devices = devices;
     clique->mode = configured_transport_mode();
     clique->rccl_dispatch = configured_dispatch_mode();
+    clique->rccl_experimental = configured_switch("WAC_LLAMA_RCCL_EXPERIMENTAL", false);
     clique->d3d12_buffer_bytes = configured_size("WAC_D3D12_BUFFER_BYTES", 64ULL * 1024 * 1024);
     clique->d3d12_route_min_bytes = configured_size("WAC_D3D12_MIN_BYTES", 0);
-    clique->d3d12_route_max_bytes = configured_size("WAC_D3D12_MAX_BYTES", 32ULL * 1024 - 1);
+    clique->d3d12_route_max_bytes = configured_size(
+            "WAC_D3D12_MAX_BYTES", clique->d3d12_buffer_bytes);
     if (clique->d3d12_route_max_bytes > clique->d3d12_buffer_bytes) {
         clique->d3d12_route_max_bytes = clique->d3d12_buffer_bytes;
     }
 
     std::vector<ncclComm_t> real_comms(static_cast<std::size_t>(ndev), nullptr);
     ncclResult_t real_result = ncclSystemError;
-    if (clique->mode != transport_mode::d3d12) {
+    if (clique->mode != transport_mode::d3d12 && clique->rccl_experimental) {
         real_rccl_api & real = real_rccl();
         if (real.module != nullptr) {
             real_result = real.comm_init_all(real_comms.data(), ndev, devices.data());
         } else {
             g_last_error = real.error;
         }
+    } else if (clique->mode != transport_mode::d3d12) {
+        g_last_error =
+                "Direct-RCCL is disabled by default for llama.cpp's same-process ncclCommInitAll path";
     }
 
     std::string d3d12_error;

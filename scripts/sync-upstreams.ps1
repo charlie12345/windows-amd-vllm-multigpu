@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $Pins = Get-Content -Raw -LiteralPath (
-    Join-Path $ProjectRoot 'pins\nightly-2026-07-28.json'
+    Join-Path $ProjectRoot 'pins\rocm10-vllm-v0.28.0.json'
 ) | ConvertFrom-Json
 
 function Sync-PinnedRepository {
@@ -24,6 +24,19 @@ function Sync-PinnedRepository {
         if ($LASTEXITCODE -ne 0) {
             throw "Cloning $Url failed."
         }
+
+        # A --no-checkout clone reports every tracked path as deleted until its
+        # first checkout. Complete that exact pinned checkout before applying
+        # the existing-worktree dirty guard below.
+        & git -C $Destination fetch --depth 1 origin $Commit
+        if ($LASTEXITCODE -ne 0) {
+            throw "Fetching pinned commit $Commit from $Url failed."
+        }
+        & git -C $Destination checkout --detach $Commit
+        if ($LASTEXITCODE -ne 0) {
+            throw "Checking out pinned commit $Commit failed."
+        }
+        return
     }
 
     $Current = (& git -C $Destination rev-parse HEAD 2>$null).Trim()

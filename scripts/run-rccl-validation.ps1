@@ -23,6 +23,8 @@ if (-not (Test-Path -LiteralPath $Python)) {
     throw 'Run scripts\bootstrap-nightly.ps1 first.'
 }
 
+& (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') -RequiredCount 2
+
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'configure-rccl-windows.ps1') `
         -FunctionProfile $FunctionProfile

@@ -66,22 +66,21 @@ fault testing before production use.
 
 ## Ling 3.0 and MLA prefill
 
-The pinned Windows fork predates complete `BailingMoeV3ForCausalLM` support.
-This repository applies the InclusionAI Ling 3.0 support commit plus the later
-upstream FP8, routed-expert MXFP4, and KDA graph-profile fixes recorded in the
-pin manifest. The patch is layered after the existing Windows/DFlash changes
-instead of merging a moving vLLM branch.
+vLLM v0.28 includes `BailingMoeV3ForCausalLM`, Ling reasoning/tool parsing,
+FP8, routed-expert MXFP4, KDA fixes, and DFlash2 support. The pinned Windows
+fork is rebased on that release. This plugin no longer applies the former Ling
+or DFlash patch queue.
 
-Current upstream ROCm MLA prefill selection tries AITER FlashAttention and then
+The Windows fork adds `TRITON_MLA` after AITER FlashAttention and
 FlashAttention. On the reference RDNA 4 Windows stack, AITER rejects the GPU
-family and ROCm FlashAttention is unavailable. The local `TRITON_MLA` fallback
-is therefore selected third. It was numerically checked on `gfx1201` and used
-by successful TP1 and TP2 Ling dummy-weight generation. This compatibility
-backend should be proposed upstream separately from the model-support port;
-tuned AITER/FlashAttention remain preferable where available.
+family and ROCm FlashAttention is unavailable, so Triton is selected third. It
+was numerically checked on `gfx1201`, including the v0.28 chunked-context API,
+and used by successful TP1 and TP2 Ling dummy-weight generation. Tuned
+AITER/FlashAttention remain preferable where available.
 
-The real-weight O1 benchmark also exposed an upstream compile dispatcher bug:
-dynamic compile ranges were never searched when `compile_sizes` was unset.
-The version-locked `compile-ranges-without-compile-sizes` patch removes that
-incorrect early return and adds a focused regression test. This is independent
-of the Windows transport and is a candidate for a small upstream fix.
+The real-weight O1 benchmark also exposed a compile dispatcher bug: dynamic
+compile ranges were never searched when `compile_sizes` was unset. The pinned
+Windows fork removes that early return and includes a focused regression test.
+Both generally useful changes landed through
+[`vLLM_for_AMD` PR #26](https://github.com/charlie12345/vLLM_for_AMD/pull/26),
+not through the transport plugin.

@@ -22,6 +22,7 @@ $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $Vllm = Join-Path $ProjectRoot '.venv-vllm\Scripts\vllm.exe'
 $RcclDll = Join-Path $ProjectRoot 'build\rccl-windows\rccl.dll'
 $D3D12Dll = Join-Path $ProjectRoot 'build\native\wavmg_d3d12_v1.dll'
+$HipDll = Join-Path $ProjectRoot 'build\native\wavmg_hip_v1.dll'
 foreach ($Required in ($Vllm, $ModelPath)) {
     if (-not (Test-Path -LiteralPath $Required)) {
         throw "Missing prerequisite: $Required"
@@ -29,6 +30,10 @@ foreach ($Required in ($Vllm, $ModelPath)) {
 }
 if (($InputLen + $OutputLen) -gt 512) {
     throw 'InputLen plus OutputLen cannot exceed 512.'
+}
+if ($Mode -ne 'Single') {
+    & (Join-Path $PSScriptRoot 'assert-windows-amd-gpu-health.ps1') `
+        -RequiredCount 2
 }
 
 $RunRoot = Join-Path $ProjectRoot (
@@ -63,13 +68,14 @@ function Invoke-LingBenchmark {
     $env:WAVMG_USE_RCCL = if ($Tp -eq 2) { '1' } else { '0' }
     $env:WAVMG_USE_D3D12 = if ($Tp -eq 2 -and $UseD3D12) { '1' } else { '0' }
     if ($Tp -eq 2) {
-        foreach ($Required in ($RcclDll, $D3D12Dll)) {
+        foreach ($Required in ($RcclDll, $D3D12Dll, $HipDll)) {
             if (-not (Test-Path -LiteralPath $Required)) {
                 throw "Missing native transport: $Required"
             }
         }
         $env:WAVMG_RCCL_DLL = $RcclDll
         $env:WAVMG_D3D12_DLL = $D3D12Dll
+        $env:WAVMG_HIP_DLL = $HipDll
     }
 
     $OutputJson = Join-Path $RunRoot "$Name.json"

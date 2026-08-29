@@ -6,8 +6,6 @@ import ctypes
 import os
 from pathlib import Path
 
-import torch
-
 from .runtime_paths import rocm_bin_directories
 
 
@@ -31,9 +29,7 @@ class D3D12SharedBuffer:
                 library_path = configured
             else:
                 project_root = Path(__file__).resolve().parents[2]
-                library_path = (
-                    project_root / "build" / "native" / "wavmg_d3d12_v1.dll"
-                )
+                library_path = project_root / "build" / "native" / "wavmg_d3d12_v1.dll"
         library_path = Path(library_path).resolve()
         if not library_path.is_file():
             raise FileNotFoundError(
@@ -42,8 +38,7 @@ class D3D12SharedBuffer:
             )
 
         self._dll_directories = [
-            os.add_dll_directory(str(directory))
-            for directory in rocm_bin_directories()
+            os.add_dll_directory(str(directory)) for directory in rocm_bin_directories()
         ]
         self._dll_directories.append(os.add_dll_directory(str(library_path.parent)))
         self._library = ctypes.WinDLL(str(library_path))
