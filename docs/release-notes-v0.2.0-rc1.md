@@ -1,6 +1,6 @@
 # Windows AMD multi-GPU bridge v0.2.0-rc1
 
-Private source prerelease for the dual-R9700 Windows test stack.
+Initial source prerelease for the dual-R9700 Windows test stack.
 
 ## Added
 
@@ -19,7 +19,8 @@ Private source prerelease for the dual-R9700 Windows test stack.
 - Its export table contains only the six intended llama symbols.
 - An unchanged ROCmFPX/llama source tree configured with the installed
   `rccl_DIR` and built `ggml-hip.dll` successfully.
-- The private GitHub repository reported `isPrivate: true` before upload.
+- At the time of this historical RC1 upload, GitHub reported the repository as
+  private. The repository became public in the later source-release phase.
 
 ## Not yet a stable binary release
 

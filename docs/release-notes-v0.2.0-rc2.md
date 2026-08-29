@@ -1,6 +1,6 @@
 # Windows AMD multi-GPU bridge v0.2.0-rc2
 
-Private source update for the dual-R9700 Windows ROCm 10 test stack. This PR
+Source update for the dual-R9700 Windows ROCm 10 test stack. This PR
 publishes no Docker image, prebuilt DLL, wheel containing native code, model
 weight, tag, or GitHub Release asset; users compile the components locally.
 

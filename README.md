@@ -14,7 +14,7 @@ remain external to the inference-engine source trees.
 > [`pins/rocm10-vllm-v0.28.0.json`](pins/rocm10-vllm-v0.28.0.json).
 
 > [!CAUTION]
-> This private repository contains experimental development software and is
+> This repository contains experimental development software and is
 > provided without warranty. Multi-GPU runtime or driver failures can hang
 > processes, strand WDDM VRAM allocations, disrupt the desktop, or require a
 > restart/cold power cycle. Save other work, validate with the small probes
